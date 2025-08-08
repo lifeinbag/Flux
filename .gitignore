@@ -1,0 +1,25 @@
+# dependencies
+node_modules/
+ECHO is on.
+# builds
+dist/
+build/
+.next/
+.turbo/
+ECHO is on.
+# env and secrets
+.env
+.env.*
+server/.env
+server/.env.*
+ECHO is on.
+# logs
+*.log
+server/logs/
+server/premium_system.log
+server/logs/**
+ECHO is on.
+# misc
+.DS_Store
+npm-debug.log*
+yarn-error.log*

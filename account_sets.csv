@@ -1,0 +1,4 @@
+"id","userId","name","createdAt","updatedAt","futureSymbol","spotSymbol","symbolsLocked","companyMappings","premiumTableName"
+"935d3f85-4879-4514-b81e-44a25c59a38a","af4e412c-9d6f-4d03-ac03-831800778378","IC Markets & Exness","2025-07-22 15:58:02.749+04","2025-07-22 15:58:44.166+04","GCQ25","XAUUSDm",True,"{""MT4"":""ICMarketsSC-01"",""MT5"":""Exness-MT5Trial6""}","premium_icmarkets_exness_gcq25_vs_xauusdm"
+"cde1d9c3-c732-4823-bce5-be75d234b678","af4e412c-9d6f-4d03-ac03-831800778378","VPFX & Octa Real","2025-07-22 15:34:26.969+04","2025-07-22 15:45:51.897+04","GC-Q25","XAUUSD",True,"{""MT5"":""VPFXCapitalMarkets-"",""MT4"":""OctaFX-5""}","premium_vpfx_octafx_gc_q25_vs_xauusd"
+"eeaf330f-b739-4c7b-8507-61fb70fc0228","af4e412c-9d6f-4d03-ac03-831800778378","Equiti & XM Global","2025-07-22 17:35:29.436+04","2025-07-22 17:36:02.339+04","GCQ5","GOLD#",True,"{""MT4"":""XMGlobal-""}","premium_equiti_xm_gcq5_vs_gold_"

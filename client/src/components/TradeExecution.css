@@ -1,0 +1,741 @@
+/* Professional Trading Cockpit CSS */
+
+/* Main container with professional dark theme */
+.trade-exec-page {
+  background: linear-gradient(135deg, #0a0f1c 0%, #1a1f2e 100%);
+  min-height: 100vh;
+  color: #e2e8f0;
+  padding: 2rem;
+  font-family: 'JetBrains Mono', 'Consolas', 'SF Mono', monospace;
+  overflow-x: hidden;
+  position: relative;
+}
+
+.trade-exec-page::before {
+  content: '';
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: 
+    radial-gradient(circle at 20% 50%, rgba(59, 130, 246, 0.05) 0%, transparent 50%),
+    radial-gradient(circle at 80% 20%, rgba(16, 185, 129, 0.05) 0%, transparent 50%),
+    radial-gradient(circle at 40% 80%, rgba(139, 92, 246, 0.05) 0%, transparent 50%);
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* Account Panel - Same as other trading panels */
+.account-panel::before { 
+  background: linear-gradient(90deg, #8b5cf6, #7c3aed); 
+}
+
+.account-selector-content {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+/* Latency Panel */
+.latency-panel {
+  grid-column: 1 / -1; /* Full width */
+}
+
+.latency-panel::before {
+  background: linear-gradient(90deg, #f59e0b, #f97316);
+}
+
+/* Test Latency Button */
+.action-btn.test-latency::before {
+  background: linear-gradient(90deg, #f59e0b, #f97316);
+}
+
+.action-btn.test-latency:hover::before {
+  background: linear-gradient(90deg, #f97316, #ea580c);
+}
+
+.latency-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2rem;
+  margin-bottom: 1rem;
+}
+
+.latency-broker h3 {
+  color: #f8fafc;
+  font-size: 1rem;
+  font-weight: 600;
+  margin-bottom: 1rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid rgba(71, 85, 105, 0.4);
+}
+
+.latency-metrics {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.latency-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: rgba(30, 41, 59, 0.4);
+  padding: 0.75rem 1rem;
+  border-radius: 8px;
+  border: 1px solid rgba(71, 85, 105, 0.3);
+}
+
+.latency-item label {
+  color: #94a3b8;
+  font-size: 0.9rem;
+  font-weight: 500;
+}
+
+.latency-values {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.25rem;
+}
+
+.latency-values .current {
+  color: #10b981;
+  font-weight: 700;
+  font-size: 1.1rem;
+}
+
+.latency-values .average {
+  color: #6b7280;
+  font-size: 0.8rem;
+}
+
+.latency-note {
+  text-align: center;
+  color: #6b7280;
+  font-size: 0.85rem;
+  background: rgba(30, 41, 59, 0.3);
+  padding: 0.75rem;
+  border-radius: 8px;
+  border: 1px solid rgba(71, 85, 105, 0.2);
+}
+
+.latency-note p {
+  margin: 0;
+}
+
+/* Cockpit Header */
+.cockpit-header {
+  background: rgba(30, 41, 59, 0.8);
+  backdrop-filter: blur(20px);
+  border: 1px solid rgba(71, 85, 105, 0.6);
+  border-radius: 20px;
+  padding: 2rem;
+  margin-bottom: 2rem;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
+  position: relative;
+  z-index: 1;
+}
+
+.header-main {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  margin-bottom: 2rem;
+}
+
+.header-icon {
+  background: linear-gradient(135deg, #3b82f6, #1d4ed8);
+  border-radius: 16px;
+  padding: 1rem;
+  box-shadow: 0 8px 25px rgba(59, 130, 246, 0.3);
+}
+
+.header-content h1 {
+  font-size: 2.5rem;
+  font-weight: 800;
+  background: linear-gradient(135deg, #60a5fa 0%, #34d399 50%, #a78bfa 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  margin: 0;
+  letter-spacing: -0.02em;
+}
+
+.header-content .subtitle {
+  color: #94a3b8;
+  font-size: 1.1rem;
+  margin: 0.5rem 0 0 0;
+  font-weight: 400;
+}
+
+.broker-status {
+  display: flex;
+  gap: 2rem;
+  justify-content: center;
+}
+
+.status-item {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  background: rgba(15, 23, 42, 0.6);
+  padding: 1rem 1.5rem;
+  border-radius: 12px;
+  border: 1px solid rgba(34, 197, 94, 0.3);
+}
+
+.premium-spread {
+  border: 1px solid rgba(80, 227, 194, 0.3);
+}
+
+.status-indicator {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #22c55e;
+  box-shadow: 0 0 10px rgba(34, 197, 94, 0.5);
+  animation: pulse 2s infinite;
+}
+
+.symbol-count {
+  background: rgba(34, 197, 94, 0.2);
+  color: #22c55e;
+  padding: 0.25rem 0.75rem;
+  border-radius: 20px;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.spread-values {
+  display: flex;
+  gap: 1rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #50e3c2;
+}
+
+.spread-values div {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+/* Trading Grid Layout */
+.trading-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2rem;
+  position: relative;
+  z-index: 1;
+}
+
+/* When account panel is present, adjust layout */
+.trading-grid:has(.account-panel) {
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: auto auto auto;
+}
+
+.account-panel {
+  grid-column: 1 / -1;
+}
+
+/* Trading Panels */
+.trading-panel {
+  background: rgba(30, 41, 59, 0.8);
+  backdrop-filter: blur(20px);
+  border: 1px solid rgba(71, 85, 105, 0.6);
+  border-radius: 16px;
+  padding: 2rem;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+  transition: all 0.3s ease;
+  position: relative;
+  overflow: hidden;
+}
+
+.trading-panel::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 4px;
+  border-radius: 16px 16px 0 0;
+}
+
+.symbol-panel::before { background: linear-gradient(90deg, #3b82f6, #1d4ed8); }
+.direction-panel::before { background: linear-gradient(90deg, #10b981, #059669); }
+.parameters-panel::before { background: linear-gradient(90deg, #8b5cf6, #7c3aed); }
+.actions-panel::before { background: linear-gradient(90deg, #f59e0b, #d97706); }
+
+.trading-panel:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.4);
+}
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 2rem;
+}
+
+.panel-header h2 {
+  font-size: 1.5rem;
+  font-weight: 700;
+  margin: 0;
+  color: white;
+}
+
+/* Symbol Selection Styles */
+.symbol-inputs {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.input-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.input-group label {
+  color: #94a3b8;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.input-wrapper {
+  position: relative;
+}
+
+.symbol-input {
+  width: 100%;
+  padding: 1rem 1rem 1rem 3rem;
+  background: rgba(15, 23, 42, 0.8);
+  border: 1px solid rgba(71, 85, 105, 0.6);
+  border-radius: 12px;
+  color: #e2e8f0;
+  font-size: 1rem;
+  transition: all 0.3s ease;
+  box-sizing: border-box;
+}
+
+.symbol-input:focus {
+  outline: none;
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.15);
+  background: rgba(15, 23, 42, 0.9);
+}
+
+.input-icon {
+  position: absolute;
+  left: 1rem;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 18px;
+  height: 18px;
+  color: #64748b;
+}
+
+/* Direction Buttons */
+.direction-buttons {
+  display: flex;
+  gap: 1rem;
+}
+
+.direction-btn {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 1.5rem;
+  background: rgba(15, 23, 42, 0.6);
+  border: 1px solid rgba(71, 85, 105, 0.6);
+  border-radius: 12px;
+  color: #94a3b8;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  position: relative;
+  overflow: hidden;
+}
+
+.direction-btn span {
+  font-size: 1.1rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+}
+
+.buy-btn:hover {
+  border-color: rgba(34, 197, 94, 0.6);
+  color: #22c55e;
+  transform: translateY(-2px);
+}
+
+.sell-btn:hover {
+  border-color: rgba(239, 68, 68, 0.6);
+  color: #ef4444;
+  transform: translateY(-2px);
+}
+
+.buy-btn.active {
+  background: linear-gradient(135deg, rgba(34, 197, 94, 0.2), rgba(16, 185, 129, 0.2));
+  border-color: #22c55e;
+  color: #22c55e;
+  box-shadow: 0 0 20px rgba(34, 197, 94, 0.3);
+}
+
+.sell-btn.active {
+  background: linear-gradient(135deg, rgba(239, 68, 68, 0.2), rgba(220, 38, 38, 0.2));
+  border-color: #ef4444;
+  color: #ef4444;
+  box-shadow: 0 0 20px rgba(239, 68, 68, 0.3);
+}
+
+/* Parameter Inputs */
+.parameter-inputs {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.param-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  position: relative;
+}
+
+.param-group label {
+  color: #94a3b8;
+  font-size: 0.9rem;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+/* Warning Banner Styles */
+.parameters-warning-banner {
+  background: linear-gradient(135deg, rgba(245, 158, 11, 0.15), rgba(217, 119, 6, 0.15));
+  border: 1px solid rgba(245, 158, 11, 0.4);
+  border-radius: 12px;
+  padding: 1rem 1.25rem;
+  margin-bottom: 1.5rem;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  animation: warningPulse 3s ease-in-out infinite;
+}
+
+.warning-icon {
+  width: 20px;
+  height: 20px;
+  color: #f59e0b;
+  flex-shrink: 0;
+}
+
+.warning-text {
+  color: #fbbf24;
+  font-size: 0.9rem;
+  font-weight: 600;
+  line-height: 1.4;
+  flex: 1;
+}
+
+@keyframes warningPulse {
+  0%, 100% {
+    border-color: rgba(245, 158, 11, 0.4);
+    box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.2);
+  }
+  50% {
+    border-color: rgba(245, 158, 11, 0.6);
+    box-shadow: 0 0 0 4px rgba(245, 158, 11, 0.1);
+  }
+}
+
+.param-input {
+  padding: 1rem;
+  background: rgba(15, 23, 42, 0.8);
+  border: 1px solid rgba(71, 85, 105, 0.6);
+  border-radius: 12px;
+  color: #e2e8f0;
+  font-size: 1rem;
+  transition: all 0.3s ease;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.param-input:focus {
+  outline: none;
+  border-color: #8b5cf6;
+  box-shadow: 0 0 0 4px rgba(139, 92, 246, 0.15);
+}
+
+/* Action Buttons */
+.action-buttons {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  margin-bottom: 2rem;
+}
+
+.action-btn {
+  position: relative;
+  padding: 1.25rem;
+  border: none;
+  border-radius: 12px;
+  color: white;
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  overflow: hidden;
+}
+
+.current-premium {
+  background: linear-gradient(135deg, #3b82f6, #1d4ed8);
+  box-shadow: 0 4px 15px rgba(59, 130, 246, 0.3);
+}
+
+.target-premium {
+  background: linear-gradient(135deg, #ec4899, #be185d);
+  box-shadow: 0 4px 15px rgba(236, 72, 153, 0.3);
+}
+
+.action-btn:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 25px rgba(0, 0, 0, 0.3);
+}
+
+.btn-content {
+  position: relative;
+  z-index: 2;
+}
+
+.btn-glow {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: linear-gradient(45deg, transparent, rgba(255, 255, 255, 0.1), transparent);
+  transform: translateX(-100%);
+  transition: transform 0.6s ease;
+}
+
+.action-btn:hover .btn-glow {
+  transform: translateX(100%);
+}
+
+/* Scalping Toggle */
+.scalping-control {
+  padding-top: 1.5rem;
+  border-top: 1px solid rgba(71, 85, 105, 0.3);
+}
+
+.scalping-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  cursor: pointer;
+  color: #94a3b8;
+  font-weight: 600;
+  transition: color 0.3s ease;
+}
+
+.scalping-toggle:hover {
+  color: #f59e0b;
+}
+
+.scalping-toggle input {
+  display: none;
+}
+
+.toggle-slider {
+  position: relative;
+  width: 50px;
+  height: 24px;
+  background: rgba(71, 85, 105, 0.6);
+  border-radius: 12px;
+  transition: all 0.3s ease;
+  margin-left: auto;
+}
+
+.toggle-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 20px;
+  height: 20px;
+  background: white;
+  border-radius: 50%;
+  transition: all 0.3s ease;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+}
+
+.scalping-toggle input:checked + .toggle-slider {
+  background: linear-gradient(135deg, #f59e0b, #d97706);
+  box-shadow: 0 0 15px rgba(245, 158, 11, 0.4);
+}
+
+.scalping-toggle input:checked + .toggle-slider .toggle-thumb {
+  transform: translateX(26px);
+}
+
+/* Loading States */
+.loading-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 50vh;
+  gap: 2rem;
+}
+
+.loading-spinner {
+  width: 60px;
+  height: 60px;
+  border: 4px solid rgba(59, 130, 246, 0.2);
+  border-top-color: #3b82f6;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+.loading-text {
+  color: #94a3b8;
+  font-size: 1.1rem;
+  font-weight: 500;
+}
+
+/* Error States */
+.error-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 50vh;
+  gap: 1.5rem;
+}
+
+.error-icon {
+  font-size: 3rem;
+}
+
+.error-text {
+  color: #ef4444;
+  font-size: 1.1rem;
+  text-align: center;
+  max-width: 500px;
+}
+
+/* Animations */
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+@keyframes pulse {
+  0%, 100% { 
+    opacity: 1; 
+    transform: scale(1); 
+  }
+  50% { 
+    opacity: 0.6; 
+    transform: scale(1.1); 
+  }
+}
+
+@keyframes glow {
+  0%, 100% {
+    box-shadow: 0 0 5px currentColor;
+  }
+  50% {
+    box-shadow: 0 0 20px currentColor;
+  }
+}
+
+/* Responsive Design */
+@media (max-width: 1200px) {
+  .trading-grid {
+    grid-template-columns: 1fr;
+    gap: 1.5rem;
+  }
+  
+  .direction-buttons {
+    flex-direction: column;
+  }
+
+  .broker-status {
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+}
+
+@media (max-width: 768px) {
+  .trade-exec-page {
+    padding: 1rem;
+  }
+  
+  .cockpit-header {
+    padding: 1.5rem;
+  }
+  
+  .header-main {
+    flex-direction: column;
+    text-align: center;
+    gap: 1rem;
+  }
+  
+  .header-content h1 {
+    font-size: 2rem;
+  }
+  
+  .broker-status {
+    flex-direction: column;
+    gap: 1rem;
+  }
+  
+  .trading-panel {
+    padding: 1.5rem;
+  }
+  
+  .account-set-selector {
+    padding: 1.5rem;
+  }
+  
+  .account-set-selector label {
+    flex-direction: column;
+    gap: 0.75rem;
+  }
+  
+  .account-set-selector select {
+    min-width: auto;
+    width: 100%;
+  }
+
+  .spread-values {
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+}
+
+@media (max-width: 480px) {
+  .symbol-inputs {
+    gap: 1rem;
+  }
+  
+  .parameter-inputs {
+    gap: 1rem;
+  }
+  
+  .action-buttons {
+    gap: 0.75rem;
+  }
+  
+  .panel-header h2 {
+    font-size: 1.25rem;
+  }
+}

@@ -1,0 +1,981 @@
+/* pages/Dashboard.css */
+
+/* ─── MODERN DASHBOARD STYLES ─────────────────────────── */
+.modern-dashboard {
+  background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+  min-height: 100vh;
+  color: white;
+  padding: 1.5rem;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+.dashboard-content {
+  max-width: 1600px;
+  margin: 0 auto;
+  padding: 0;
+  background: transparent;
+  box-sizing: border-box;
+}
+
+/* ─── ERROR ALERT ─────────────────────────────────────── */
+.error-alert {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  background: rgba(239, 68, 68, 0.15);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  color: #fca5a5;
+  padding: 1rem 1.5rem;
+  border-radius: 12px;
+  margin-bottom: 2rem;
+  font-size: 0.9rem;
+  backdrop-filter: blur(8px);
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+}
+
+.error-alert .error-icon {
+  width: 20px;
+  height: 20px;
+  color: #f87171;
+}
+
+/* ─── DASHBOARD HEADER ────────────────────────────────── */
+.dashboard-header {
+  text-align: center;
+  margin-bottom: 3rem;
+  padding: 2rem 0;
+  position: relative;
+}
+
+.dashboard-header::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 25%;
+  right: 25%;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(100, 116, 139, 0.5), transparent);
+}
+
+.dashboard-header h1 {
+  font-size: 2.8rem;
+  font-weight: 800;
+  background: linear-gradient(135deg, #60a5fa 0%, #34d399 50%, #a78bfa 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  margin: 0 0 1rem 0;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+}
+
+.dashboard-header p {
+  color: #94a3b8;
+  font-size: 1.1rem;
+  margin: 0;
+  font-weight: 400;
+  max-width: 600px;
+  margin: 0 auto;
+  line-height: 1.6;
+}
+
+/* ─── SELECTOR SECTION ────────────────────────────────── */
+.modern-selector-section {
+  background: rgba(30, 41, 59, 0.6);
+  backdrop-filter: blur(16px);
+  border: 1px solid rgba(71, 85, 105, 0.6);
+  border-radius: 16px;
+  padding: 2.5rem;
+  margin-bottom: 3rem;
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.2);
+  transition: all 0.3s ease;
+}
+
+.modern-selector-section:hover {
+  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.2);
+}
+
+.selector-group {
+  margin-bottom: 2rem;
+}
+
+.selector-group label {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  color: #e2e8f0;
+  font-weight: 600;
+  font-size: 1rem;
+}
+
+.modern-select {
+  padding: 0.875rem 1.25rem;
+  background: rgba(15, 23, 42, 0.7);
+  border: 1px solid rgba(100, 116, 139, 0.6);
+  border-radius: 10px;
+  color: white;
+  font-size: 1rem;
+  min-width: 220px;
+  transition: all 0.3s ease;
+  cursor: pointer;
+  appearance: none;
+  background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3e%3cpolyline points='6 9 12 15 18 9'%3e%3c/polyline%3e%3c/svg%3e");
+  background-repeat: no-repeat;
+  background-position: right 0.75rem center;
+  background-size: 1rem;
+}
+
+.modern-select:focus {
+  outline: none;
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.15);
+  background-color: rgba(15, 23, 42, 0.9);
+}
+
+.symbol-selectors {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  gap: 2.5rem;
+  align-items: end;
+}
+
+.symbol-group {
+  position: relative;
+}
+
+.symbol-group label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  color: #e2e8f0;
+  font-weight: 600;
+  font-size: 1rem;
+}
+
+.modern-input {
+  padding: 0.875rem 1.25rem;
+  background: rgba(15, 23, 42, 0.7);
+  border: 1px solid rgba(100, 116, 139, 0.6);
+  border-radius: 10px;
+  color: white;
+  font-size: 1rem;
+  transition: all 0.3s ease;
+  width: 100%;
+}
+
+.modern-input:focus {
+  outline: none;
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.15);
+  background-color: rgba(15, 23, 42, 0.9);
+}
+
+.modern-input::placeholder {
+  color: #64748b;
+}
+
+.quote-display {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  display: flex;
+  gap: 1.5rem;
+  font-size: 0.875rem;
+  margin-top: 0.75rem;
+  font-weight: 500;
+}
+
+.quote-display .bid {
+  color: #f87171;
+  font-weight: 600;
+}
+
+.quote-display .ask {
+  color: #4ade80;
+  font-weight: 600;
+}
+
+.symbol-stats {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  color: #94a3b8;
+  font-size: 0.9rem;
+  align-items: flex-end;
+}
+
+.loading-text {
+  color: #64748b;
+  font-style: italic;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.loading-text::before {
+  content: '';
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-top-color: white;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+/* ─── SUBMIT BUTTON ───────────────────────────────────── */
+.submit-btn {
+  padding: 0.75rem 1.5rem;
+  background: linear-gradient(135deg, #3b82f6, #1d4ed8);
+  border: none;
+  border-radius: 8px;
+  color: white;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  margin-top: 0.5rem;
+  font-size: 0.9rem;
+  box-shadow: 0 4px 6px -1px rgba(59, 130, 246, 0.2);
+}
+
+.submit-btn:hover:not(:disabled) {
+  background: linear-gradient(135deg, #2563eb, #1e40af);
+  transform: translateY(-2px);
+  box-shadow: 0 10px 15px -3px rgba(59, 130, 246, 0.3);
+}
+
+.submit-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.submit-message {
+  font-size: 0.875rem;
+  margin-top: 0.5rem;
+  font-weight: 600;
+  display: block;
+}
+
+.submit-message.success {
+  color: #10b981;
+}
+
+.submit-message.error {
+  color: #ef4444;
+}
+
+/* ─── PERFORMANCE GRID ────────────────────────────────── */
+.performance-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 1.5rem;
+  margin-bottom: 3rem;
+}
+
+.performance-card {
+  background: rgba(30, 41, 59, 0.6);
+  backdrop-filter: blur(16px);
+  border: 1px solid rgba(71, 85, 105, 0.6);
+  border-radius: 16px;
+  padding: 1.5rem;
+  transition: all 0.3s ease;
+  position: relative;
+  overflow: hidden;
+  box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
+}
+
+.performance-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 4px;
+  background: linear-gradient(90deg, #4a90e2, #50e3c2);
+  border-radius: 16px 16px 0 0;
+}
+
+.performance-card::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.03) 0%, transparent 100%);
+  pointer-events: none;
+}
+
+.performance-card:hover {
+  transform: translateY(-5px);
+  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.2);
+  background: rgba(30, 41, 59, 0.8);
+}
+
+.performance-card.broker1::before { background: linear-gradient(90deg, #4a90e2, #60a5fa); }
+.performance-card.broker2::before { background: linear-gradient(90deg, #9013fe, #a78bfa); }
+.performance-card.pnl::before { background: linear-gradient(90deg, #7ed321, #4ade80); }
+.performance-card.spread::before { background: linear-gradient(90deg, #50e3c2, #34d399); }
+
+.card-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.card-icon {
+  width: 40px;
+  height: 40px;
+  background: rgba(59, 130, 246, 0.15);
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  border: 1px solid rgba(59, 130, 246, 0.2);
+  transition: all 0.3s ease;
+}
+
+.performance-card:hover .card-icon {
+  transform: rotate(5deg);
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+}
+
+.card-info h3 {
+  font-size: 1rem;
+  font-weight: 700;
+  margin: 0 0 0.25rem 0;
+  color: white;
+  letter-spacing: -0.01em;
+}
+
+.card-info p {
+  font-size: 0.8rem;
+  color: #94a3b8;
+  margin: 0;
+  line-height: 1.4;
+}
+
+.card-value {
+  font-size: 1.8rem;
+  font-weight: 800;
+  color: white;
+  margin-bottom: 0.5rem;
+  letter-spacing: -0.02em;
+  background: linear-gradient(180deg, white, rgba(255, 255, 255, 0.9));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.card-change {
+  font-size: 0.9rem;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.card-change.positive {
+  color: #4ade80;
+}
+
+.card-change.negative {
+  color: #f87171;
+}
+
+.spread-values {
+  display: flex;
+  gap: 1rem;
+  font-size: 1.2rem;
+  font-weight: 700;
+  color: white;
+}
+
+.spread-values div {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.spread-values div::before {
+  content: '';
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.spread-values div:first-child::before {
+  background-color: #4ade80;
+}
+
+.spread-values div:last-child::before {
+  background-color: #f87171;
+}
+
+/* ─── ENHANCED CHART SECTION ─────────────────────────── */
+.chart-section {
+  background: rgba(30, 41, 59, 0.6);
+  backdrop-filter: blur(16px);
+  border: 1px solid rgba(71, 85, 105, 0.6);
+  border-radius: 16px;
+  padding: 0; /* Remove padding to let chart component handle its own spacing */
+  margin-bottom: 3rem;
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1);
+  transition: all 0.3s ease;
+  overflow: hidden; /* Ensure rounded corners are maintained */
+}
+
+.chart-section:hover {
+  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.2);
+}
+
+.section-header {
+  margin-bottom: 2rem;
+  padding: 2.5rem 2.5rem 0 2.5rem; /* Add padding back for header only */
+}
+
+.section-header h2 {
+  font-size: 1.75rem;
+  font-weight: 700;
+  margin: 0 0 0.5rem 0;
+  color: white;
+  letter-spacing: -0.01em;
+}
+
+.section-header p {
+  color: #94a3b8;
+  margin: 0;
+  font-size: 1rem;
+}
+
+/* ─── NEW: Professional Chart Styles ──────────────────── */
+.professional-chart-container {
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid rgba(71, 85, 105, 0.3);
+  background: #0B1426;
+}
+
+/* Timeframe selector styling for Dashboard integration */
+.timeframe-selector {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 2.5rem 2.5rem 0 2.5rem;
+}
+
+.timeframe-select {
+  padding: 0.5rem 1rem;
+  background: rgba(15, 23, 42, 0.8);
+  border: 1px solid rgba(100, 116, 139, 0.6);
+  border-radius: 8px;
+  color: white;
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+.timeframe-select:focus {
+  outline: none;
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
+}
+
+/* ─── ORIGINAL CHART CONTAINER (for fallback) ─────────── */
+.chart-container {
+  background: rgba(15, 23, 42, 0.4);
+  border-radius: 12px;
+  padding: 0; /* Remove padding to let professional chart handle spacing */
+  min-height: 400px;
+  border: 1px solid rgba(71, 85, 105, 0.3);
+  transition: all 0.3s ease;
+  overflow: hidden;
+}
+
+.chart-container:hover {
+  border-color: rgba(71, 85, 105, 0.6);
+}
+
+/* ─── FULLSCREEN CHART SUPPORT ──────────────────────── */
+.chart-fullscreen {
+  position: fixed !important;
+  top: 0 !important;
+  left: 0 !important;
+  right: 0 !important;
+  bottom: 0 !important;
+  z-index: 9999 !important;
+  background: #0B1426 !important;
+  border-radius: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
+.chart-fullscreen .chart-section {
+  height: 100vh !important;
+  margin: 0 !important;
+  border-radius: 0 !important;
+}
+
+/* Fullscreen overlay backdrop */
+.chart-fullscreen-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.95);
+  z-index: 9998;
+}
+
+/* ─── PROFESSIONAL CHART BUTTON STYLES ─────────────────── */
+.chart-control-btn {
+  padding: 0.5rem;
+  background: rgba(30, 41, 59, 0.8);
+  border: 1px solid rgba(71, 85, 105, 0.6);
+  border-radius: 6px;
+  color: #e5e7eb;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+  backdrop-filter: blur(8px);
+}
+
+.chart-control-btn:hover {
+  background: rgba(59, 130, 246, 0.2);
+  border-color: rgba(59, 130, 246, 0.4);
+  color: #3b82f6;
+  transform: translateY(-1px);
+}
+
+.chart-control-btn:active {
+  transform: translateY(0);
+}
+
+.chart-control-btn.primary {
+  background: rgba(59, 130, 246, 0.2);
+  border-color: rgba(59, 130, 246, 0.4);
+  color: #3b82f6;
+}
+
+.chart-control-btn.primary:hover {
+  background: rgba(59, 130, 246, 0.3);
+  border-color: rgba(59, 130, 246, 0.6);
+  color: #60a5fa;
+}
+
+/* ─── INFO GRID ───────────────────────────────────────── */
+.info-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
+  gap: 2rem;
+}
+
+.info-card {
+  background: rgba(30, 41, 59, 0.6);
+  backdrop-filter: blur(16px);
+  border: 1px solid rgba(71, 85, 105, 0.6);
+  border-radius: 16px;
+  padding: 2.5rem;
+  transition: all 0.3s ease;
+  box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
+}
+
+.info-card:hover {
+  transform: translateY(-5px);
+  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.2);
+  background: rgba(30, 41, 59, 0.8);
+}
+
+.info-card .card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 2rem;
+}
+
+.info-card h3 {
+  font-size: 1.3rem;
+  font-weight: 700;
+  margin: 0;
+  color: white;
+  letter-spacing: -0.01em;
+}
+
+/* ─── STATUS CARD ─────────────────────────────────────── */
+.status-indicator {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  font-size: 1rem;
+  font-weight: 600;
+  padding: 0.5rem 1rem;
+  border-radius: 8px;
+  background: rgba(71, 85, 105, 0.3);
+  transition: all 0.3s ease;
+}
+
+.status-indicator.online {
+  color: #4ade80;
+  background: rgba(74, 222, 128, 0.1);
+  border: 1px solid rgba(74, 222, 128, 0.2);
+}
+
+.status-indicator.offline {
+  color: #f87171;
+  background: rgba(248, 113, 113, 0.1);
+  border: 1px solid rgba(248, 113, 113, 0.2);
+}
+
+.status-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.6; transform: scale(1.1); }
+}
+
+.status-card p {
+  color: #cbd5e1;
+  margin: 0;
+  font-size: 1rem;
+  line-height: 1.6;
+}
+
+/* ─── REFERRAL CARD ───────────────────────────────────── */
+.referral-input-group {
+  display: flex;
+  gap: 1rem;
+  align-items: center;
+}
+
+.referral-input {
+  flex: 1;
+  padding: 0.875rem 1.25rem;
+  background: rgba(15, 23, 42, 0.7);
+  border: 1px solid rgba(100, 116, 139, 0.6);
+  border-radius: 10px;
+  color: white;
+  font-size: 1rem;
+  transition: all 0.3s ease;
+}
+
+.referral-input:focus {
+  outline: none;
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.15);
+}
+
+.copy-btn {
+  padding: 0.875rem 1.5rem;
+  background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+  border: none;
+  border-radius: 10px;
+  color: white;
+  font-weight: 600;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  transition: all 0.3s ease;
+  font-size: 1rem;
+  box-shadow: 0 4px 6px -1px rgba(16, 185, 129, 0.2);
+}
+
+.copy-btn:hover {
+  background: linear-gradient(135deg, #059669 0%, #047857 100%);
+  transform: translateY(-2px);
+  box-shadow: 0 10px 15px -3px rgba(16, 185, 129, 0.3);
+}
+
+.copy-btn:active {
+  transform: translateY(0);
+}
+
+/* ─── ACCOUNTS CARD ───────────────────────────────────── */
+.link-account-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem 1.25rem;
+  background: rgba(59, 130, 246, 0.15);
+  border: 1px solid rgba(59, 130, 246, 0.3);
+  border-radius: 8px;
+  color: #60a5fa;
+  text-decoration: none;
+  font-size: 0.9rem;
+  font-weight: 600;
+  transition: all 0.3s ease;
+}
+
+.link-account-btn:hover {
+  background: rgba(59, 130, 246, 0.25);
+  color: white;
+  transform: translateY(-2px);
+}
+
+.account-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.account-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1.5rem;
+  background: rgba(15, 23, 42, 0.5);
+  border-radius: 10px;
+  border: 1px solid rgba(71, 85, 105, 0.4);
+  transition: all 0.3s ease;
+}
+
+.account-item:hover {
+  background: rgba(15, 23, 42, 0.7);
+  border-color: rgba(71, 85, 105, 0.6);
+  transform: translateX(4px);
+}
+
+.account-item strong {
+  color: #e2e8f0;
+  font-weight: 700;
+  font-size: 1rem;
+}
+
+.account-item span {
+  color: #94a3b8;
+  font-size: 0.9rem;
+}
+
+
+/* ─── LOCKED SYMBOLS ─────────────────────────────────── */
+.locked-symbol {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.875rem 1.25rem;
+  background: rgba(15, 23, 42, 0.9);
+  border: 1px solid rgba(245, 158, 11, 0.6);
+  border-radius: 10px;
+  color: #fbbf24;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.unlock-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.75rem 1.5rem;
+  background: linear-gradient(135deg, #f59e0b, #d97706);
+  border: none;
+  border-radius: 8px;
+  color: white;
+  font-weight: 600;
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  margin-top: 0.5rem;
+}
+
+.unlock-btn:hover {
+  background: linear-gradient(135deg, #d97706, #b45309);
+  transform: translateY(-1px);
+}
+
+.premium-display {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  color: #50e3c2;
+  font-weight: 600;
+  font-size: 0.9rem;
+  text-align: right;
+}
+
+/* ─── ANIMATIONS & ENHANCED EFFECTS ──────────────────── */
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-5px); }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(20px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes slideIn {
+  from { transform: translateX(-100%); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+
+/* Professional chart animations */
+@keyframes chartLoad {
+  0% { opacity: 0; transform: scale(0.95); }
+  100% { opacity: 1; transform: scale(1); }
+}
+
+.chart-container,
+.professional-chart-container {
+  animation: chartLoad 0.5s ease-out;
+}
+
+/* ─── RESPONSIVE DESIGN WITH CHART ENHANCEMENTS ───────── */
+@media (max-width: 1200px) {
+  .performance-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  
+  .symbol-selectors {
+    grid-template-columns: 1fr 1fr;
+    gap: 2rem;
+  }
+  
+  .info-grid {
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  }
+  
+  /* Chart adjustments for tablets */
+  .chart-section {
+    padding: 0;
+  }
+  
+  .section-header {
+    padding: 2rem 2rem 0 2rem;
+  }
+  
+  .timeframe-selector {
+    padding: 2rem 2rem 0 2rem;
+  }
+}
+
+@media (max-width: 768px) {
+  .modern-dashboard {
+    padding: 1rem;
+  }
+  
+  .dashboard-header h1 {
+    font-size: 2.25rem;
+  }
+  
+  .dashboard-header p {
+    font-size: 1rem;
+  }
+  
+  .symbol-selectors {
+    grid-template-columns: 1fr;
+    gap: 1.5rem;
+  }
+  
+  .performance-grid {
+    grid-template-columns: 1fr;
+  }
+  
+  .info-grid {
+    grid-template-columns: 1fr;
+  }
+  
+  .referral-input-group {
+    flex-direction: column;
+  }
+  
+  .referral-input {
+    margin-bottom: 1rem;
+    width: 100%;
+  }
+  
+  /* Mobile chart optimizations */
+  .chart-section {
+    margin-bottom: 2rem;
+  }
+  
+  .section-header {
+    padding: 1.5rem 1.5rem 0 1.5rem;
+    margin-bottom: 1rem;
+  }
+  
+  .section-header h2 {
+    font-size: 1.5rem;
+  }
+  
+  .timeframe-selector {
+    padding: 1.5rem 1.5rem 0 1.5rem;
+    flex-wrap: wrap;
+  }
+  
+  .chart-container {
+    min-height: 300px;
+  }
+  
+  /* Professional chart mobile adjustments */
+  .professional-chart-container {
+    border-radius: 8px;
+  }
+  
+  .chart-control-btn {
+    padding: 0.4rem;
+  }
+}
+
+@media (max-width: 480px) {
+  .modern-dashboard {
+    padding: 0.75rem;
+  }
+  
+  .dashboard-header h1 {
+    font-size: 1.875rem;
+  }
+  
+  .modern-selector-section,
+  .chart-section,
+  .info-card,
+  .performance-card {
+    padding: 1.5rem;
+  }
+  
+  .card-value {
+    font-size: 1.5rem;
+  }
+  
+  /* Small mobile chart optimizations */
+  .section-header {
+    padding: 1rem 1rem 0 1rem;
+  }
+  
+  .section-header h2 {
+    font-size: 1.25rem;
+  }
+  
+  .timeframe-selector {
+    padding: 1rem 1rem 0 1rem;
+  }
+  
+  .chart-container {
+    min-height: 280px;
+  }
+  
+  /* Fullscreen adjustments for mobile */
+  .chart-fullscreen .section-header {
+    padding: 1rem;
+  }
+  
+  .chart-fullscreen .timeframe-selector {
+    padding: 0 1rem 1rem 1rem;
+  }
+}

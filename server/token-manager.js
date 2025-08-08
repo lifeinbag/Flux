@@ -1,0 +1,365 @@
+require('dotenv').config();
+const axios = require('axios');
+
+class TokenError extends Error {}
+
+class AtomicLock {
+  constructor() {
+    this.queues = new Map();
+  }
+
+  acquire(key) {
+    if (!this.queues.has(key)) {
+      this.queues.set(key, []);
+      return Promise.resolve(() => this._release(key));
+    }
+    return new Promise(resolve => {
+      this.queues.get(key).push(resolve);
+    });
+  }
+
+  _release(key) {
+    const q = this.queues.get(key);
+    if (!q) return;
+    if (q.length > 0) {
+      const next = q.shift();
+      next(() => this._release(key));
+    } else {
+      this.queues.delete(key);
+    }
+  }
+}
+
+const TOKEN_TTL_MS = 22 * 60 * 60 * 1000;
+const CLEANUP_INTERVAL_MS = 30 * 60 * 1000;
+const CONNECTION_POOL_SIZE = 3;
+
+const TokenManager = {
+  cache: new Map(),
+  lock: new AtomicLock(),
+  connectionPools: new Map(),
+  tokenTTL: TOKEN_TTL_MS,
+
+  init() {
+    setInterval(() => this._cleanup(), CLEANUP_INTERVAL_MS);
+  },
+
+  _cleanup() {
+    const now = Date.now();
+    for (const [key, slot] of this.cache.entries()) {
+      if (now - slot.lastFetch > TOKEN_TTL_MS * 1.5) {
+        this.cache.delete(key);
+      }
+    }
+  },
+
+  // ✅ ENHANCED: Connection pooling for better performance
+  _getClient(isMT5) {
+    const baseURL = isMT5 ? process.env.MT5_API_URL : process.env.MT4_API_URL;
+    if (!baseURL) {
+      throw new TokenError(`Missing API URL for ${isMT5 ? 'MT5' : 'MT4'}`);
+    }
+    
+    const poolKey = `${isMT5 ? 'MT5' : 'MT4'}_pool`;
+    
+    if (!this.connectionPools.has(poolKey)) {
+      this.connectionPools.set(poolKey, {
+        clients: [],
+        currentIndex: 0
+      });
+      
+      // Create connection pool
+      for (let i = 0; i < CONNECTION_POOL_SIZE; i++) {
+        const client = axios.create({
+          baseURL,
+          timeout: 30000,
+          httpsAgent: new (require('https').Agent)({
+            rejectUnauthorized: false,
+            keepAlive: true,
+            maxSockets: 10,
+            timeout: 30000
+          })
+        });
+        this.connectionPools.get(poolKey).clients.push(client);
+      }
+    }
+    
+    // Round-robin client selection
+    const pool = this.connectionPools.get(poolKey);
+    const client = pool.clients[pool.currentIndex];
+    pool.currentIndex = (pool.currentIndex + 1) % CONNECTION_POOL_SIZE;
+    
+    return client;
+  },
+  
+  getConfig(isMT5) {
+    return { client: this._getClient(isMT5) };
+  },
+  
+  invalidateToken(key) {
+    if (this.cache.has(key)) {
+      this.cache.delete(key);
+    }
+  },
+
+  _generateKey(isMT5, serverName, account, brokerId, position = 1) {
+    return `${isMT5 ? 'MT5' : 'MT4'}|${serverName}|${account}|${brokerId || 'default'}|pos${position}`;
+  },
+
+  // ✅ FIXED: Enhanced API health check with better timeout
+  async _checkApiHealth(client) {
+    try {
+      // Primary: Try ConnectEx first
+      const response = await client.get('/ConnectEx', {
+        params: { user: '0', password: '0', server: 'test' },
+        timeout: 8000 // ✅ FIXED: Reduced timeout for health check
+      });
+      return true; // Any response means API is reachable
+    } catch (error) {
+      // Fallback: Try original Connect endpoint
+      try {
+        const response = await client.get('/Connect', {
+          params: { user: '0', password: '0', host: 'test' },
+          timeout: 8000
+        });
+        return true;
+      } catch (fallbackError) {
+        if (error.response || fallbackError.response) return true; // Got response, API is up
+        console.log(`API health check failed: ${error.message}`);
+        return false; // Network/timeout error
+      }
+    }
+  },
+
+  async getToken(isMT5, serverName, account, password, brokerId = null, position = 1) {
+    if (!serverName || !account || !password) {
+      throw new TokenError('Missing credentials');
+    }
+    
+    const key = this._generateKey(isMT5, serverName, account, brokerId, position);
+    
+    // ✅ FIXED: Better cache validation
+    if (this.cache.has(key)) {
+      const slot = this.cache.get(key);
+      if (Date.now() - slot.lastFetch < this.tokenTTL) {
+        // Quick validation for very recent tokens (< 2 hours)
+        if (Date.now() - slot.lastFetch < 7200000) {
+          return slot.token;
+        }
+        
+        // Skip validation for tokens < 6 hours old to reduce API calls
+        if (Date.now() - slot.lastFetch < 21600000) {
+          console.log(`Using cached token (skip validation) for ${serverName}|${account}`);
+          return slot.token;
+        }
+        
+        const isValid = await this._validateToken(this._getClient(isMT5), slot.token);
+        if (isValid) return slot.token;
+        
+        // Remove invalid token from cache
+        this.cache.delete(key);
+      }
+    }
+
+    // ✅ FIXED: API health check before token fetch
+    const client = this._getClient(isMT5);
+    console.log(`Checking ${isMT5 ? 'MT5' : 'MT4'} API health...`);
+    const apiHealthy = await this._checkApiHealth(client);
+    if (!apiHealthy) {
+      throw new TokenError(`${isMT5 ? 'MT5' : 'MT4'} API service is unavailable or responding slowly`);
+    }
+
+    // Fetch new token under lock
+    const release = await this.lock.acquire(key);
+    try {
+      const result = await this._fetchTokenSimplified(client, serverName, account, password);
+      this.cache.set(key, {
+        token: result.token,
+        hostPort: result.hostPort,
+        lastFetch: Date.now()
+      });
+      console.log(`✅ New token cached for ${serverName}|${account}`);
+      return result.token;
+    } finally {
+      release();
+    }
+  },
+
+  async getHostAndPort(isMT5, serverName, account, password, brokerId = null, position = 1) {
+    const key = this._generateKey(isMT5, serverName, account, brokerId, position);
+    const slot = this.cache.get(key);
+    
+    if (slot?.hostPort) {
+      return slot.hostPort;
+    }
+    
+    const baseURL = isMT5 ? process.env.MT5_API_URL : process.env.MT4_API_URL;
+    const url = new URL(baseURL);
+    return { host: url.hostname, port: url.port || 443 };
+  },
+
+  // ✅ FIXED: Enhanced token validation
+  async _validateToken(client, token) {
+    if (!token || token.length < 10) return false;
+    
+    try {
+      const response = await client.get('/CheckConnect', { 
+        params: { id: token },
+        timeout: 8000 // ✅ FIXED: Reduced timeout for validation
+      });
+      return response.status === 200 && response.data === 'OK';
+    } catch (error) {
+      console.log(`Token validation failed: ${error.message}`);
+      return false;
+    }
+  },
+
+  // ✅ FIXED: Enhanced token fetching with better error handling
+  async _fetchTokenSimplified(client, serverName, account, password) {
+    console.log(`🔄 Fetching token for ${serverName} account ${account}...`);
+    
+    // Method 1: Search and connect (primary method)
+    try {
+      console.log(`🔍 Searching for access points for ${serverName}...`);
+      const searchResponse = await client.get('/Search', {
+        params: { company: serverName },
+        timeout: 15000 // ✅ FIXED: Increased search timeout
+      });
+      
+      const searchData = searchResponse.data;
+      if (!Array.isArray(searchData) || searchData.length === 0) {
+        throw new Error(`No broker data found for ${serverName}`);
+      }
+
+      const accessPoints = this._extractAccessPointsSimplified(searchData, serverName);
+      
+      if (accessPoints.length > 0) {
+        // Try each access point with retry logic
+        for (const accessPoint of accessPoints.slice(0, 3)) {
+          for (let attempt = 1; attempt <= 2; attempt++) {
+            try {
+              const [host, port = '443'] = accessPoint.split(':');
+              console.log(`📡 Trying connection to ${host}:${port} (attempt ${attempt})...`);
+              
+              let connectResponse;
+              try {
+                // Primary: Try ConnectEx first
+                connectResponse = await client.get('/ConnectEx', {
+                  params: {
+                    user: account,
+                    password: password,
+                    server: serverName
+                  },
+                  timeout: 20000 // ✅ FIXED: Increased connection timeout
+                });
+              } catch (connectExError) {
+                // Fallback: Try original Connect endpoint
+                console.log(`ConnectEx failed, falling back to Connect: ${connectExError.message}`);
+                connectResponse = await client.get('/Connect', {
+                  params: {
+                    user: account,
+                    password: password,
+                    host: host.trim(),
+                    port: port.trim()
+                  },
+                  timeout: 20000
+                });
+              }
+              
+              // ✅ FIXED: Better response validation
+              if (connectResponse.data && typeof connectResponse.data === 'string') {
+                const data = connectResponse.data.trim();
+                
+                if (data.includes('[error]') || 
+                    data.includes('Resource temporarily unavailable') ||
+                    data.includes('Invalid account') ||
+                    data.includes('Wrong password')) {
+                  throw new Error(`Broker server error: ${data}`);
+                }
+                
+                if (data.length > 10 && !data.includes('error')) {
+                  console.log(`✅ Connection successful to ${host}:${port}`);
+                  return {
+                    token: data,
+                    hostPort: { host: host.trim(), port: Number(port.trim()) || 443 }
+                  };
+                }
+              }
+              
+              throw new Error('Invalid or empty response from broker');
+              
+            } catch (connectError) {
+              console.log(`⚠️ Failed to connect to ${accessPoint} (attempt ${attempt}): ${connectError.message}`);
+              
+              // Don't retry on authentication errors
+              if (connectError.message.includes('Invalid account') || 
+                  connectError.message.includes('Wrong password')) {
+                break;
+              }
+              
+              // Wait before retry (except on last attempt)
+              if (attempt < 2) {
+                await new Promise(resolve => setTimeout(resolve, 2000));
+              }
+            }
+          }
+        }
+      }
+    } catch (searchError) {
+      console.log(`⚠️ Search method failed for ${serverName}: ${searchError.message}`);
+    }
+    // Removed direct connection fallback. If search method fails or no access points
+    // result in a successful connection, the final error below will be thrown.
+
+    // ✅ FIXED: Better error categorization and messaging
+    throw new TokenError(
+      `Failed to connect to ${serverName} after multiple attempts. Please check:\n` +
+      `• Server name: "${serverName}" is correct\n` +
+      `• Account ${account} credentials are valid\n` +
+      `• Broker server is online and accessible\n` +
+      `• Network connectivity is stable\n` +
+      `• Try again in a few minutes if server is busy`
+    );
+  },
+
+  _extractAccessPointsSimplified(searchData, serverName) {
+    const accessPoints = [];
+    
+    try {
+      for (const company of searchData) {
+        if (company.name === serverName && Array.isArray(company.access)) {
+          accessPoints.push(...company.access);
+        }
+        
+        if (Array.isArray(company.results)) {
+          const server = company.results.find(r => r.name === serverName);
+          if (server && Array.isArray(server.access)) {
+            accessPoints.push(...server.access);
+          }
+        }
+      }
+      
+      console.log(`🔍 Found ${accessPoints.length} access points for ${serverName}:`, accessPoints);
+      return accessPoints;
+      
+    } catch (error) {
+      console.log(`⚠️ Error extracting access points: ${error.message}`);
+      return [];
+    }
+  },
+
+  async _fetchTokenWithHost(client, serverName, account, password) {
+    return await this._fetchTokenSimplified(client, serverName, account, password);
+  },
+
+  _extractHosts(searchData, serverName) {
+    const accessPoints = this._extractAccessPointsSimplified(searchData, serverName);
+    return accessPoints.map(ap => {
+      const [h, p] = ap.split(':').map(s => s.trim());
+      return { host: h, port: Number(p) || 443 };
+    });
+  },
+};
+
+TokenManager.init();
+module.exports = { TokenManager, TokenError };

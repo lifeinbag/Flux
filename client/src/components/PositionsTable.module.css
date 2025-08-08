@@ -1,0 +1,19 @@
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-bottom: 1rem;
+}
+.table th,
+.table td {
+  padding: 0.5rem 0.75rem;
+  border: 1px solid #ddd;
+}
+.table th {
+  background: #f7f7f7;
+  text-transform: uppercase;
+  font-size: 0.85rem;
+  letter-spacing: 0.05em;
+}
+.table tr:nth-child(even) {
+  background: #fafafa;
+}

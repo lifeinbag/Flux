@@ -1,0 +1,60 @@
+🔧 Debug & Monitoring Endpoints:
+🐛 http://localhost:5000/api/debug/stop-ghost
+   ➜ Clears ghost data collections and restarts from database
+
+📊 http://localhost:5000/api/debug/premium-tables-status  
+   ➜ Shows all premium tables with last update times, row counts, and status (ACTIVE/SLOW/STALE/NO_DATA)
+
+🔑 http://localhost:5000/api/debug/token-status
+   ➜ Shows all cached MT4/MT5 tokens, their age, and expiration status
+
+🗃️ http://localhost:5000/api/debug/database-overview
+   ➜ Shows all database tables with row counts, insert/update stats, categorized by type
+📈 Data Collection & Status:
+📊 http://localhost:5000/api/data-collection/status
+   ➜ Shows active data collection processes and their status
+
+🕊️ http://localhost:5000/api/trading/status
+   ➜ Checks if MT4/MT5 APIs are reachable
+
+🩺 http://localhost:5000/api/trading/ping
+   ➜ Health check for trading services
+💰 Premium Data & Candles:
+📋 http://localhost:5000/api/premium-candles/debug-tables
+   ➜ Lists all premium tables in the database
+
+🔍 http://localhost:5000/api/premium-candles/debug-schema/{tableName}
+   ➜ Shows table structure, column details, and sample data
+
+📊 http://localhost:5000/api/premium-candles?company={name}&accountSetId={id}
+   ➜ Gets premium candlestick data for charts
+
+📈 http://localhost:5000/api/premium-candles/latest?company={name}&accountSetId={id}
+   ➜ Gets latest premium data point
+🔐 Core API Routes:
+👤 http://localhost:5000/api/users/me (Protected)
+   ➜ Get current user profile
+
+🏢 http://localhost:5000/api/account-sets (Protected)
+   ➜ CRUD operations for account sets
+
+💹 http://localhost:5000/api/trading/* (Protected)
+   ➜ Trading operations, quotes, symbols, balances
+
+🔑 http://localhost:5000/api/auth/*
+   ➜ Authentication endpoints (login, register, OTP)
+
+⚙️ http://localhost:5000/api/admin/* (Admin Only)
+   ➜ Admin-only operations
+💡 Usage Examples:
+bash# Check if premium tables are updating
+curl http://localhost:5000/api/debug/premium-tables-status
+
+# Clear ghost collections
+curl http://localhost:5000/api/debug/stop-ghost
+
+# Check token health
+curl http://localhost:5000/api/debug/token-status
+
+# Database health overview
+curl http://localhost:5000/api/debug/database-overview
