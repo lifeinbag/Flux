@@ -111,7 +111,11 @@ const TokenManager = {
     try {
       // Primary: Try ConnectEx first
       const response = await client.get('/ConnectEx', {
-        params: { user: '0', password: '0', server: 'test' },
+        params: { 
+          user: process.env.MT4_TEST_USER || 'test_user', 
+          password: process.env.MT4_TEST_PASSWORD || 'test_pass', 
+          server: process.env.MT4_TEST_SERVER || 'test_server' 
+        },
         timeout: 8000 // ✅ FIXED: Reduced timeout for health check
       });
       return true; // Any response means API is reachable
@@ -119,7 +123,11 @@ const TokenManager = {
       // Fallback: Try original Connect endpoint
       try {
         const response = await client.get('/Connect', {
-          params: { user: '0', password: '0', host: 'test' },
+          params: { 
+            user: process.env.MT4_TEST_USER || 'test_user', 
+            password: process.env.MT4_TEST_PASSWORD || 'test_pass', 
+            host: process.env.MT4_TEST_SERVER || 'test_server' 
+          },
           timeout: 8000
         });
         return true;
@@ -138,25 +146,42 @@ const TokenManager = {
     
     const key = this._generateKey(isMT5, serverName, account, brokerId, position);
     
-    // ✅ FIXED: Better cache validation
+    // ✅ ENHANCED: Better cache validation with error handling
     if (this.cache.has(key)) {
       const slot = this.cache.get(key);
-      if (Date.now() - slot.lastFetch < this.tokenTTL) {
-        // Quick validation for very recent tokens (< 2 hours)
-        if (Date.now() - slot.lastFetch < 7200000) {
+      const tokenAge = Date.now() - slot.lastFetch;
+      
+      // Use very recent tokens without validation (< 1 hour)
+      if (tokenAge < 3600000) {
+        console.log(`✅ Using fresh cached token for ${serverName}|${account} (age: ${Math.floor(tokenAge/60000)}min)`);
+        return slot.token;
+      }
+      
+      // For tokens 1-6 hours old, skip validation to reduce API load
+      if (tokenAge < this.tokenTTL) {
+        // Validate tokens older than 6 hours but within TTL
+        if (tokenAge > 21600000) {
+          try {
+            const isValid = await this._validateToken(this._getClient(isMT5), slot.token);
+            if (isValid) {
+              console.log(`✅ Validated cached token for ${serverName}|${account}`);
+              return slot.token;
+            } else {
+              console.log(`❌ Token validation failed for ${serverName}|${account}, will refresh`);
+              this.cache.delete(key);
+            }
+          } catch (validationError) {
+            console.log(`⚠ Token validation error for ${serverName}|${account}:`, validationError.message);
+            // Continue to fetch new token if validation fails
+            this.cache.delete(key);
+          }
+        } else {
+          console.log(`✅ Using cached token (skip validation) for ${serverName}|${account} (age: ${Math.floor(tokenAge/3600000)}h)`);
           return slot.token;
         }
-        
-        // Skip validation for tokens < 6 hours old to reduce API calls
-        if (Date.now() - slot.lastFetch < 21600000) {
-          console.log(`Using cached token (skip validation) for ${serverName}|${account}`);
-          return slot.token;
-        }
-        
-        const isValid = await this._validateToken(this._getClient(isMT5), slot.token);
-        if (isValid) return slot.token;
-        
-        // Remove invalid token from cache
+      } else {
+        // Token is expired, remove from cache
+        console.log(`🗑 Removing expired token for ${serverName}|${account} (age: ${Math.floor(tokenAge/3600000)}h)`);
         this.cache.delete(key);
       }
     }

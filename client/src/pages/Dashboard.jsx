@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useRef, createContext, useCallback } from 'react';
 import API from '../services/api';
-import { fetchBalance, fetchSymbols, fetchQuote } from '../services/api';
+import { fetchSymbols, fetchQuote } from '../services/api';
 import SellPremiumChart from '../components/SellPremiumChart';
-import { connectWS, onMessage, offMessage, subscribeToQuotes, isWSConnected, getWSStatus, clearQuoteSubscriptions } from '../services/wsService';
-import { TrendingUp, DollarSign, BarChart3, Activity, Copy, CheckCircle, AlertTriangle, Link as LinkIcon, Lock, Unlock, Clock } from 'lucide-react';
+import { connectWS, onMessage, subscribeToQuotes, isWSConnected, getWSStatus, clearQuoteSubscriptions } from '../services/wsService';
+import { TrendingUp, DollarSign, BarChart3, Activity, AlertTriangle, Lock, Unlock, Clock } from 'lucide-react';
 import './Dashboard.css';
 
 export const DashboardContext = createContext();
@@ -172,7 +172,6 @@ export default function Dashboard() {
   const [submitting, setSubmitting] = useState(false);
   const [submitMessage, setSubmitMessage] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
-  const [copyStatus, setCopyStatus] = useState('');
   const latestRef = useRef({});
   const [wsConnected, setWsConnected] = useState(false);
   const [wsStatus, setWsStatus] = useState('disconnected');
@@ -187,22 +186,29 @@ export default function Dashboard() {
   const broker2 = sortedBrokers.find(b => b.position === 2) || {};
   const broker1Term = broker1.terminal || '';
   const broker2Term = broker2.terminal || '';
-  const key1 = broker1.server && broker1.accountNumber && broker1.position
+  
+  // Enhanced error handling for missing broker data
+  const broker1Valid = broker1.server && broker1.accountNumber && broker1.position && broker1.terminal;
+  const broker2Valid = broker2.server && broker2.accountNumber && broker2.position && broker2.terminal;
+  
+  const key1 = broker1Valid
     ? `${broker1.server}|${broker1.accountNumber}|${broker1.terminal}|pos${broker1.position}`
     : '';
-  const key2 = broker2.server && broker2.accountNumber && broker2.position
+  const key2 = broker2Valid
     ? `${broker2.server}|${broker2.accountNumber}|${broker2.terminal}|pos${broker2.position}`
     : '';
+    
   const broker1Id = broker1.id || broker1._id;
   const broker2Id = broker2.id || broker2._id;
-  const b1 = brokerBalances[key1] || { balance: 0, profit: 0 };
-  const b2 = brokerBalances[key2] || { balance: 0, profit: 0 };
+  
+  // Enhanced balance data with error handling - show 0 balance instead of error for non-admin users
+  const b1 = key1 ? (brokerBalances[key1] || { balance: 0, profit: 0 }) : { balance: 0, profit: 0 };
+  const b2 = key2 ? (brokerBalances[key2] || { balance: 0, profit: 0 }) : { balance: 0, profit: 0 };
   const overallNetProfit = tradeMapping.length > 0
     ? tradeMapping.reduce((sum, t) => sum + (t.mt4Profit || 0) + (t.mt5Profit || 0), 0)
     : Object.values(brokerBalances).reduce((sum, b) => sum + (b.profit || 0), 0);
   const totalOpenOrders = tradeMapping.length;
   const totalOpenLots = tradeMapping.reduce((sum, t) => sum + (t.lots || 0), 0);
-  const referralLink = `${window.location.origin}/signup?ref=${user?.referralCode || ''}`;
   const timeframeOptions = [
     { value: 1, label: '1M' },
     { value: 5, label: '5M' },
@@ -240,7 +246,10 @@ export default function Dashboard() {
     API.get('/users/me')
       .then(r => setUser(r.data))
       .catch(() => {
-        setUser({ email: 'User', referralCode: 'HDtqsCQO' });
+        // Generate a fallback referral code or use default
+        const fallbackCode = process.env.REACT_APP_DEFAULT_REFERRAL_CODE || 
+                            Math.random().toString(36).substring(2, 10).toUpperCase();
+        setUser({ email: 'User', referralCode: fallbackCode });
       });
     
     API.get('/trading/status')
@@ -357,6 +366,50 @@ export default function Dashboard() {
       setWsConnected(true);
     };
 
+    // Helper function to fetch latest quote when WebSocket data is null
+    const fetchLatestQuote = async (symbol, type) => {
+      try {
+        // Find the appropriate broker for this symbol
+        let brokerId, terminal;
+        if (type === 'spot') {
+          const broker = brokers.find(b => b.position === 2) || brokers[1];
+          brokerId = broker?.id;
+          terminal = broker?.terminal;
+        } else {
+          const broker = brokers.find(b => b.position === 1) || brokers[0];
+          brokerId = broker?.id;
+          terminal = broker?.terminal;
+        }
+        
+        if (brokerId && terminal) {
+          const response = await API.get(`/trading/quote/${symbol}`, {
+            params: { terminal, id: brokerId }
+          });
+          
+          if (response.data.success && response.data.data) {
+            const quote = {
+              bid: parseFloat(response.data.data.bid),
+              ask: parseFloat(response.data.data.ask),
+              symbol: symbol,
+              timestamp: response.data.data.timestamp || new Date().toISOString()
+            };
+            
+            if (type === 'spot') {
+              console.log('✅ Fetched latest spot quote from cache:', quote);
+              setSpotQuote(quote);
+              if (currentSet.symbolsLocked) setLockedSpotQuote(quote);
+            } else {
+              console.log('✅ Fetched latest future quote from cache:', quote);
+              setFutureQuote(quote);
+              if (currentSet.symbolsLocked) setLockedFutureQuote(quote);
+            }
+          }
+        }
+      } catch (error) {
+        console.error('❌ Failed to fetch latest quote for', symbol, ':', error.message);
+      }
+    };
+
     const handleQuoteUpdate = (data) => {
       console.log('📈 Quote update received:', data);
       console.log('🔒 Symbols locked:', currentSet.symbolsLocked);
@@ -380,12 +433,18 @@ export default function Dashboard() {
           });
         }
         
-        if (data.spotSymbol === currentSet.spotSymbol && data.spotQuote) {
-          console.log('✅ Updating spot quote for locked symbols:', data.spotQuote);
-          setSpotQuote(data.spotQuote);
-          setLockedSpotQuote(data.spotQuote);
+        if (data.spotSymbol === currentSet.spotSymbol) {
+          if (data.spotQuote) {
+            console.log('✅ Updating spot quote for locked symbols:', data.spotQuote);
+            setSpotQuote(data.spotQuote);
+            setLockedSpotQuote(data.spotQuote);
+          } else {
+            console.log('⚠️ Spot quote is null, trying to fetch from cache for symbol:', data.spotSymbol);
+            // Try to get the latest quote from cache/API
+            fetchLatestQuote(data.spotSymbol, 'spot');
+          }
         } else {
-          console.log('❌ Spot symbol mismatch or missing quote:', {
+          console.log('❌ Spot symbol mismatch:', {
             expected: currentSet.spotSymbol,
             received: data.spotSymbol,
             hasQuote: !!data.spotQuote
@@ -398,9 +457,14 @@ export default function Dashboard() {
           console.log('✅ Updating future quote for unlocked symbols:', data.futureQuote);
           setFutureQuote(data.futureQuote);
         }
-        if (data.spotSymbol === spotSymbol && data.spotQuote) {
-          console.log('✅ Updating spot quote for unlocked symbols:', data.spotQuote);
-          setSpotQuote(data.spotQuote);
+        if (data.spotSymbol === spotSymbol) {
+          if (data.spotQuote) {
+            console.log('✅ Updating spot quote for unlocked symbols:', data.spotQuote);
+            setSpotQuote(data.spotQuote);
+          } else {
+            console.log('⚠️ Spot quote is null, trying to fetch from cache for symbol:', data.spotSymbol);
+            fetchLatestQuote(data.spotSymbol, 'spot');
+          }
         }
       }
     };
@@ -416,31 +480,63 @@ export default function Dashboard() {
         const brokerId = data.brokerId || data.data?.brokerId;
         const balanceData = data.data || data;
         
-        if (!brokerId || !currentSet.brokers?.length) {
+        if (!brokerId || !currentSet.brokers?.length || !selectedSetId) {
+          console.log('⚠ Skipping balance update: missing required data', { 
+            brokerId: !!brokerId, 
+            hasBrokers: !!currentSet.brokers?.length, 
+            selectedSetId: !!selectedSetId 
+          });
           return;
         }
         
-        // Use cached broker lookup for performance
-        let broker = brokerLookupCache.current.get(brokerId);
+        // CRITICAL FIX: Only update balance if broker belongs to current account set
+        const broker = currentSet.brokers.find(x => 
+          (x.id === brokerId) || (x._id === brokerId)
+        );
+        
         if (!broker) {
-          broker = currentSet.brokers.find(x => 
-            (x.id === brokerId) || (x._id === brokerId)
-          );
-          if (broker) {
-            brokerLookupCache.current.set(brokerId, broker);
-          }
+          console.log('⚠ Skipping balance update: broker not found in current account set', { 
+            brokerId, 
+            accountSetId: selectedSetId,
+            availableBrokers: currentSet.brokers.map(b => ({ id: b.id, _id: b._id }))
+          });
+          return;
         }
         
-        if (!broker) return;
+        // Cache the broker for performance
+        brokerLookupCache.current.set(brokerId, broker);
         
         const key = `${broker.server}|${broker.accountNumber}|${broker.terminal}|pos${broker.position}`;
-        setBrokerBalances(prev => ({
-          ...prev,
-          [key]: {
-            balance: balanceData.balance || 0,
-            profit: balanceData.profit || 0
-          }
-        }));
+        
+        console.log('✅ Updating balance for account set:', { 
+          accountSetId: selectedSetId, 
+          brokerId, 
+          terminal: broker.terminal, 
+          balance: balanceData.balance, 
+          profit: balanceData.profit 
+        });
+        
+        setBrokerBalances(prev => {
+          // Only keep balances for brokers in current account set
+          const currentSetKeys = currentSet.brokers.map(b => 
+            `${b.server}|${b.accountNumber}|${b.terminal}|pos${b.position}`
+          );
+          
+          const filteredPrev = Object.keys(prev).reduce((acc, k) => {
+            if (currentSetKeys.includes(k)) {
+              acc[k] = prev[k];
+            }
+            return acc;
+          }, {});
+          
+          return {
+            ...filteredPrev,
+            [key]: {
+              balance: balanceData.balance || 0,
+              profit: balanceData.profit || 0
+            }
+          };
+        });
         
         lastBalanceUpdate.current = Date.now();
         setWsConnected(true);
@@ -687,11 +783,6 @@ export default function Dashboard() {
     broker2.position,
   ]);
 
-  const copyReferralLink = () => {
-    navigator.clipboard.writeText(referralLink);
-    setCopyStatus('copied');
-    setTimeout(() => setCopyStatus(''), 2000);
-  };
 
   if (!user || tradingStatus === null) {
     return (
@@ -906,7 +997,7 @@ export default function Dashboard() {
                   <TrendingUp style={{ width: '24px', height: '24px', color: '#4a90e2' }} />
                 </div>
                 <div className="card-info">
-                  <h3>Broker 1 ({broker1Term})</h3>
+                  <h3>Broker 1 ({broker1Term || 'Not Set'})</h3>
                   <p>Balance</p>
                 </div>
               </div>
@@ -922,7 +1013,7 @@ export default function Dashboard() {
                   <BarChart3 style={{ width: '24px', height: '24px', color: '#9013fe' }} />
                 </div>
                 <div className="card-info">
-                  <h3>Broker 2 ({broker2Term})</h3>
+                  <h3>Broker 2 ({broker2Term || 'Not Set'})</h3>
                   <p>Balance</p>
                 </div>
               </div>
@@ -1015,69 +1106,6 @@ export default function Dashboard() {
             )}
           </div>
 
-          <div className="info-grid">
-            <div className="info-card status-card">
-              <div className="card-header">
-                <h3>Trading API Status</h3>
-                <div className={`status-indicator ${tradingStatus.includes('available') ? 'online' : 'offline'}`}>
-                  <div className="status-dot"></div>
-                  {tradingStatus.includes('available') ? 'Online' : 'Offline'}
-                </div>
-              </div>
-              <p>{tradingStatus}</p>
-            </div>
-
-            <div className="info-card referral-card">
-              <div className="card-header">
-                <h3>Your Referral Link</h3>
-              </div>
-              <div className="referral-input-group">
-                <input
-                  type="text"
-                  readOnly
-                  value={referralLink}
-                  onFocus={e => e.target.select()}
-                  className="referral-input"
-                />
-                <button
-                  onClick={copyReferralLink}
-                  className="copy-btn"
-                >
-                  {copyStatus === 'copied' ? (
-                    <>
-                      <CheckCircle style={{ width: '16px', height: '16px' }} />
-                      Copied!
-                    </>
-                  ) : (
-                    <>
-                      <Copy style={{ width: '16px', height: '16px' }} />
-                      Copy
-                    </>
-                  )}
-                </button>
-              </div>
-            </div>
-
-            <div className="info-card accounts-card">
-              <div className="card-header">
-                <h3>Linked Accounts</h3>
-                <a href="/link-account" className="link-account-btn">
-                  <LinkIcon style={{ width: '16px', height: '16px' }} />
-                  Manage
-                </a>
-              </div>
-              <div className="account-list">
-                <div className="account-item">
-                  <strong>MT4:</strong> 
-                  <span>{currentSet.brokers.find(b => b.terminal==='MT4')?.server || 'Not linked'}</span>
-                </div>
-                <div className="account-item">
-                  <strong>MT5:</strong> 
-                  <span>{currentSet.brokers.find(b => b.terminal==='MT5')?.server || 'Not linked'}</span>
-                </div>
-              </div>
-            </div>
-          </div>
         </main>
       </div>
     </DashboardContext.Provider>

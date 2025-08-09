@@ -1,6 +1,6 @@
 const axios = require('axios');
 const https = require('https');
-const fs = require('fs');
+// Removed fs - not needed for file logging
 const { ActiveTrade, ClosedTrade, PendingOrder, AccountSet, Broker } = require('../models');
 const latencyMonitor = require('./latencyMonitor');
 const { TokenManager } = require('../token-manager');
@@ -72,7 +72,7 @@ class TradingService {
 
       // Add terminal-specific parameters
       if (broker.terminal === 'MT5') {
-        fullParams.slippage = 10000000000;
+        fullParams.slippage = 100; // Reasonable slippage value
         // Remove price for MT5
         delete fullParams.price;
       } else if (broker.terminal === 'MT4') {
@@ -81,18 +81,14 @@ class TradingService {
         delete fullParams.slippage;
       }
 
-      // Log to separate order execution file
-      const orderLogData = {
+      // Log order execution details
+      console.log('Order execution details:', {
         timestamp: new Date().toISOString(),
         brokerType: broker.terminal,
         brokerId: broker.id,
         apiUrl: client.defaults.baseURL,
         parameters: fullParams
-      };
-      
-      fs.appendFileSync('./logs/order-execution.log', 
-        JSON.stringify(orderLogData, null, 2) + '\n---\n'
-      );
+      });
 
       console.log(`Executing order on ${broker.terminal} broker (ID: ${broker.id})`);
       console.log('Order parameters:', JSON.stringify(fullParams, null, 2));
@@ -137,19 +133,15 @@ class TradingService {
       // Record latency even for failed orders
       latencyMonitor.addLatencyRecord(broker.id, 'orderSend', latency);
       
-      // Log error to order execution file
-      const errorLogData = {
+      // Log error details
+      console.error('Order execution error details:', {
         timestamp: new Date().toISOString(),
         brokerType: broker.terminal,
         brokerId: broker.id,
         error: error.message,
         errorResponse: error.response?.data,
         errorStatus: error.response?.status
-      };
-      
-      fs.appendFileSync('./logs/order-execution.log', 
-        'ERROR: ' + JSON.stringify(errorLogData, null, 2) + '\n---\n'
-      );
+      });
 
       console.error(`Order execution failed on ${broker.terminal} broker (ID: ${broker.id})`);
       console.error('Error message:', error.message);
@@ -217,9 +209,7 @@ class TradingService {
       if (!futureQuote || !spotQuote) {
         // Try one more time with individual requests instead of parallel
         try {
-          fs.appendFileSync('./logs/order-execution.log', 
-            `FALLBACK: Trying individual quote requests\n`
-          );
+          console.log('FALLBACK: Trying individual quote requests');
           
           const token1 = await this.getValidBrokerToken(broker1);
           const token2 = await this.getValidBrokerToken(broker2);
@@ -241,9 +231,7 @@ class TradingService {
           const fallbackQuote2 = response2.data;
           
           if (fallbackQuote1?.bid && fallbackQuote1?.ask && fallbackQuote2?.bid && fallbackQuote2?.ask) {
-            fs.appendFileSync('./logs/order-execution.log', 
-              `FALLBACK SUCCESS: Got quotes individually\n`
-            );
+            console.log('FALLBACK SUCCESS: Got quotes individually');
             
             const futureQuoteFallback = {
               bid: parseFloat(fallbackQuote1.bid),
@@ -269,9 +257,7 @@ class TradingService {
             );
           }
         } catch (fallbackError) {
-          fs.appendFileSync('./logs/order-execution.log', 
-            `FALLBACK FAILED: ${fallbackError.message}\n`
-          );
+          console.log('FALLBACK FAILED:', fallbackError.message);
         }
         
         throw new Error('Unable to get current quotes for premium calculation after all attempts');
@@ -374,10 +360,7 @@ class TradingService {
   async getCurrentQuotes(broker1, symbol1, broker2, symbol2, maxRetries = 2) {
     for (let attempt = 1; attempt <= maxRetries + 1; attempt++) {
       try {
-        // Log quote request to file
-        fs.appendFileSync('./logs/order-execution.log', 
-          `QUOTE REQUEST (attempt ${attempt}): Getting quotes for ${symbol1} (${broker1.terminal}) and ${symbol2} (${broker2.terminal})\n`
-        );
+        console.log(`QUOTE REQUEST (attempt ${attempt}): Getting quotes for ${symbol1} (${broker1.terminal}) and ${symbol2} (${broker2.terminal})`);
         
         const [token1, token2] = await Promise.all([
           this.getValidBrokerToken(broker1),
@@ -395,9 +378,7 @@ class TradingService {
         const quote1 = response1.data;
         const quote2 = response2.data;
 
-        fs.appendFileSync('./logs/order-execution.log', 
-          `QUOTES SUCCESS: ${symbol1}=${JSON.stringify(quote1)}, ${symbol2}=${JSON.stringify(quote2)}\n`
-        );
+        console.log(`QUOTES SUCCESS: ${symbol1}=${JSON.stringify(quote1)}, ${symbol2}=${JSON.stringify(quote2)}`);
 
         // Validate quotes
         if (!quote1 || !quote1.bid || !quote1.ask) {
@@ -420,9 +401,7 @@ class TradingService {
           }
         ];
       } catch (error) {
-        fs.appendFileSync('./logs/order-execution.log', 
-          `QUOTE ERROR (attempt ${attempt}): ${error.message}\n`
-        );
+        console.log(`QUOTE ERROR (attempt ${attempt}): ${error.message}`);
         
         // If this is the last attempt, return null
         if (attempt > maxRetries) {
@@ -430,8 +409,8 @@ class TradingService {
           return [null, null];
         }
         
-        // Wait before retrying (2 seconds, increasing delay)
-        await new Promise(resolve => setTimeout(resolve, 2000 * attempt));
+        // Wait before retrying (1 second, increasing delay)
+        await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
       }
     }
   }
@@ -590,14 +569,110 @@ class TradingService {
 
     // Check if both orders were successful
     if (!broker1Result.success || !broker2Result.success) {
-      // If only one failed, we need to close the successful one
-      if (broker1Result.success && broker2Result.ticket) {
-        // TODO: Implement order close for broker1
+      console.log('⚠️ One or both brokers failed:', {
+        broker1Success: broker1Result.success,
+        broker1Ticket: broker1Result.ticket,
+        broker1Error: broker1Result.error,
+        broker2Success: broker2Result.success,
+        broker2Ticket: broker2Result.ticket,
+        broker2Error: broker2Result.error
+      });
+      
+      // NEW LOGIC: Don't close successful trades, just create partial trade record
+      if (broker1Result.success && broker1Result.ticket && !broker2Result.success) {
+        console.log('✅ Broker1 succeeded but Broker2 failed - keeping Broker1 trade as partial trade');
+        
+        // Create a partial ActiveTrade record for the successful broker1 trade
+        const partialTrade = await ActiveTrade.create({
+          accountSetId,
+          userId,
+          broker1Id: broker1.id,
+          broker1Ticket: broker1Result.ticket,
+          broker1Symbol: accountSet.futureSymbol,
+          broker1Direction: direction,
+          broker1Volume: volume,
+          broker1OpenPrice: direction === 'Buy' ? futureQuote.ask : futureQuote.bid,
+          broker1Latency: broker1Result.latency,
+          
+          // Broker2 fields are null/empty since it failed
+          broker2Id: null,
+          broker2Ticket: null,
+          broker2Symbol: null,
+          broker2Direction: null,
+          broker2Volume: null,
+          broker2OpenPrice: null,
+          broker2Latency: null,
+          
+          executionPremium: currentPremium,
+          takeProfit,
+          stopLoss,
+          scalpingMode,
+          comment: `${comment} - PARTIAL: Broker2 failed (${broker2Result.error})`,
+          status: 'Partial' // New status for partial trades
+        });
+        
+        return {
+          success: true,
+          trade: partialTrade,
+          executionDetails: {
+            broker1: broker1Result,
+            broker2: broker2Result,
+            premium: currentPremium,
+            futureQuote,
+            spotQuote,
+            warning: 'Partial execution - only Broker1 succeeded'
+          }
+        };
       }
-      if (broker2Result.success && broker1Result.ticket) {
-        // TODO: Implement order close for broker2
+      
+      if (broker2Result.success && broker2Result.ticket && !broker1Result.success) {
+        console.log('✅ Broker2 succeeded but Broker1 failed - keeping Broker2 trade as partial trade');
+        
+        // Create a partial ActiveTrade record for the successful broker2 trade
+        const partialTrade = await ActiveTrade.create({
+          accountSetId,
+          userId,
+          
+          // Broker1 fields are null/empty since it failed
+          broker1Id: null,
+          broker1Ticket: null,
+          broker1Symbol: null,
+          broker1Direction: null,
+          broker1Volume: null,
+          broker1OpenPrice: null,
+          broker1Latency: null,
+          
+          broker2Id: broker2.id,
+          broker2Ticket: broker2Result.ticket,
+          broker2Symbol: accountSet.spotSymbol,
+          broker2Direction: this.getReverseDirection(direction),
+          broker2Volume: volume,
+          broker2OpenPrice: this.getReverseDirection(direction) === 'Buy' ? spotQuote.ask : spotQuote.bid,
+          broker2Latency: broker2Result.latency,
+          
+          executionPremium: currentPremium,
+          takeProfit,
+          stopLoss,
+          scalpingMode,
+          comment: `${comment} - PARTIAL: Broker1 failed (${broker1Result.error})`,
+          status: 'Partial' // New status for partial trades
+        });
+        
+        return {
+          success: true,
+          trade: partialTrade,
+          executionDetails: {
+            broker1: broker1Result,
+            broker2: broker2Result,
+            premium: currentPremium,
+            futureQuote,
+            spotQuote,
+            warning: 'Partial execution - only Broker2 succeeded'
+          }
+        };
       }
 
+      // Both failed - throw error
       throw new Error(
         `Order execution failed. Broker1: ${broker1Result.success ? 'OK' : broker1Result.error}, ` +
         `Broker2: ${broker2Result.success ? 'OK' : broker2Result.error}`
@@ -607,6 +682,8 @@ class TradingService {
     if (!broker1Result.ticket || !broker2Result.ticket) {
       throw new Error('Orders executed but ticket numbers not received');
     }
+    
+    console.log('✅ Both brokers executed successfully, creating ActiveTrade record');
     
     // Create ActiveTrade record
     const activeTrade = await ActiveTrade.create({
@@ -634,6 +711,15 @@ class TradingService {
       scalpingMode,
       comment: comment,
       status: 'Active'
+    });
+    
+    console.log('✅ ActiveTrade created successfully:', {
+      tradeId: activeTrade.tradeId,
+      broker1Ticket: broker1Result.ticket,
+      broker2Ticket: broker2Result.ticket,
+      broker1Direction: direction,
+      broker2Direction: this.getReverseDirection(direction),
+      executionPremium: currentPremium
     });
 
     // Store latency data in AccountSet for persistence

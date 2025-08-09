@@ -1,6 +1,7 @@
 const { ActiveTrade, ClosedTrade, AccountSet, Broker } = require('../models');
 const axios = require('axios');
 const logger = require('../utils/logger');
+const { TokenManager } = require('../token-manager');
 
 class TradeStatusMonitor {
   constructor() {
@@ -44,8 +45,9 @@ class TradeStatusMonitor {
     try {
       logger.info('Checking active trade statuses...');
 
-      // Get all active trades
+      // Get all active trades with their brokers
       const activeTrades = await ActiveTrade.findAll({
+        where: { status: 'Active' },
         include: [
           {
             model: AccountSet,
@@ -54,12 +56,12 @@ class TradeStatusMonitor {
           {
             model: Broker,
             as: 'broker1',
-            attributes: ['id', 'terminal', 'server']
+            attributes: ['id', 'terminal', 'server', 'accountNumber', 'password', 'token', 'tokenExpiresAt']
           },
           {
             model: Broker,
             as: 'broker2',
-            attributes: ['id', 'terminal', 'server']
+            attributes: ['id', 'terminal', 'server', 'accountNumber', 'password', 'token', 'tokenExpiresAt']
           }
         ]
       });
@@ -71,28 +73,22 @@ class TradeStatusMonitor {
 
       logger.info(`Checking ${activeTrades.length} active trades...`);
 
-      // Get current open positions from MT4/MT5 APIs
-      const [mt5OpenTrades, mt4OpenTrades] = await Promise.allSettled([
-        this.getMT5OpenTrades(),
-        this.getMT4OpenTrades()
+      // Group brokers by terminal type to batch API calls
+      const mt5Brokers = new Set();
+      const mt4Brokers = new Set();
+
+      activeTrades.forEach(trade => {
+        if (trade.broker1?.terminal === 'MT5') mt5Brokers.add(trade.broker1);
+        if (trade.broker1?.terminal === 'MT4') mt4Brokers.add(trade.broker1);
+        if (trade.broker2?.terminal === 'MT5') mt5Brokers.add(trade.broker2);
+        if (trade.broker2?.terminal === 'MT4') mt4Brokers.add(trade.broker2);
+      });
+
+      // Get all open positions for each broker
+      const [mt5PositionsMap, mt4PositionsMap] = await Promise.all([
+        this.getMT5PositionsForBrokers(Array.from(mt5Brokers)),
+        this.getMT4PositionsForBrokers(Array.from(mt4Brokers))
       ]);
-
-      const mt5Tickets = new Set();
-      const mt4Tickets = new Set();
-
-      if (mt5OpenTrades.status === 'fulfilled' && mt5OpenTrades.value) {
-        mt5OpenTrades.value.forEach(trade => {
-          mt5Tickets.add(trade.ticket.toString());
-        });
-      }
-
-      if (mt4OpenTrades.status === 'fulfilled' && mt4OpenTrades.value) {
-        mt4OpenTrades.value.forEach(trade => {
-          mt4Tickets.add(trade.ticket.toString());
-        });
-      }
-
-      logger.info(`Found ${mt5Tickets.size} open MT5 trades and ${mt4Tickets.size} open MT4 trades`);
 
       // Check each active trade
       let movedCount = 0;
@@ -102,22 +98,24 @@ class TradeStatusMonitor {
         const mt4Ticket = trade.broker1?.terminal === 'MT4' ? 
           trade.broker1Ticket : trade.broker2Ticket;
 
-        const mt5Open = mt5Tickets.has(mt5Ticket);
-        const mt4Open = mt4Tickets.has(mt4Ticket);
+        const mt5BrokerId = trade.broker1?.terminal === 'MT5' ? 
+          trade.broker1.id : trade.broker2.id;
+        const mt4BrokerId = trade.broker1?.terminal === 'MT4' ? 
+          trade.broker1.id : trade.broker2.id;
+
+        const mt5Positions = mt5PositionsMap.get(mt5BrokerId) || [];
+        const mt4Positions = mt4PositionsMap.get(mt4BrokerId) || [];
+
+        const mt5Open = mt5Positions.some(pos => pos.ticket?.toString() === mt5Ticket);
+        const mt4Open = mt4Positions.some(pos => pos.ticket?.toString() === mt4Ticket);
 
         // If both trades are closed, move to closed trades
         if (!mt5Open && !mt4Open) {
           logger.info(`Trade ${trade.tradeId} is closed on both platforms, moving to closed trades`);
           
           try {
-            // First update status to 'Closed' before moving
-            await trade.update({ status: 'Closed' });
-            
             await this.moveToClosedTrades(trade);
-            
-            // Broadcast status change AFTER successful move
             this.broadcastTradeStatusChange(trade, 'closed', 'Both MT4 and MT5 positions closed');
-            
             movedCount++;
           } catch (error) {
             logger.error(`Failed to move trade ${trade.tradeId} to closed:`, error);
@@ -133,6 +131,75 @@ class TradeStatusMonitor {
 
     } catch (error) {
       logger.error('Error checking trade statuses:', error);
+    }
+  }
+
+  async getMT5PositionsForBrokers(brokers) {
+    const positionsMap = new Map();
+    
+    for (const broker of brokers) {
+      try {
+        const token = await this.getValidToken(broker, true);
+        const positions = await this.getMT5OpenTrades(token);
+        positionsMap.set(broker.id, positions);
+      } catch (error) {
+        logger.error(`Failed to get MT5 positions for broker ${broker.id}:`, error);
+        positionsMap.set(broker.id, []);
+      }
+    }
+    
+    return positionsMap;
+  }
+
+  async getMT4PositionsForBrokers(brokers) {
+    const positionsMap = new Map();
+    
+    for (const broker of brokers) {
+      try {
+        const token = await this.getValidToken(broker, false);
+        const positions = await this.getMT4OpenTrades(token);
+        positionsMap.set(broker.id, positions);
+      } catch (error) {
+        logger.error(`Failed to get MT4 positions for broker ${broker.id}:`, error);
+        positionsMap.set(broker.id, []);
+      }
+    }
+    
+    return positionsMap;
+  }
+
+  async getValidToken(broker, isMT5) {
+    const now = Date.now();
+    
+    // Check if current token is still valid (with 5-minute buffer)
+    const tokenValid = broker.token && 
+                      broker.tokenExpiresAt && 
+                      new Date(broker.tokenExpiresAt).getTime() > (now + 300000);
+    
+    if (tokenValid) {
+      return broker.token;
+    }
+    
+    try {
+      // Get new token using TokenManager
+      const token = await TokenManager.getToken(
+        isMT5,
+        broker.server,
+        broker.accountNumber,
+        broker.password,
+        broker.id
+      );
+      
+      // Update broker with new token
+      broker.token = token;
+      broker.tokenExpiresAt = new Date(Date.now() + 22 * 60 * 60 * 1000);
+      await broker.save();
+      
+      return token;
+      
+    } catch (error) {
+      logger.error(`Failed to get token for broker ${broker.id}:`, error);
+      throw error;
     }
   }
 
@@ -167,26 +234,28 @@ class TradeStatusMonitor {
     }
   }
 
-  async getMT5OpenTrades() {
+  async getMT5OpenTrades(token) {
     try {
-      const response = await axios.get('/api/mt4mt5/mt5/opened-orders?id=mf2z4i5f-lzwv-yvj0-ilv2-1ooknlivluc0', {
-        baseURL: process.env.BACKEND_URL || 'http://localhost:5000',
+      const response = await axios.get('/OpenedOrders', {
+        params: { id: token },
+        baseURL: process.env.MT5_API_URL || 'https://mt5.fluxnetwork.one:443',
         timeout: 10000
       });
-      return response.data.success ? response.data.data : [];
+      return response.data.success !== false ? (response.data.data || response.data || []) : [];
     } catch (error) {
       logger.error('Error fetching MT5 open trades:', error);
       return [];
     }
   }
 
-  async getMT4OpenTrades() {
+  async getMT4OpenTrades(token) {
     try {
-      const response = await axios.get('/api/mt4mt5/mt4/opened-orders?id=rjooxtv5-ybf5-y7ba-vj1x-l2gpc2s82tgt', {
-        baseURL: process.env.BACKEND_URL || 'http://localhost:5000',
+      const response = await axios.get('/OpenedOrders', {
+        params: { id: token },
+        baseURL: process.env.MT4_API_URL || 'https://mt4.fluxnetwork.one:443',
         timeout: 10000
       });
-      return response.data.success ? response.data.data : [];
+      return response.data.success !== false ? (response.data.data || response.data || []) : [];
     } catch (error) {
       logger.error('Error fetching MT4 open trades:', error);
       return [];

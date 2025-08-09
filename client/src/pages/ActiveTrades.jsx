@@ -202,95 +202,59 @@ export default function ActiveTrades() {
       )}
 
       {/* Active Trades Table */}
-      <div className="trades-container">
-        <div className="trades-header">
-          <div className="header-controls">
-            <div className="trade-filter">
-              <label>
-                <input type="radio" name="filter" value="all" defaultChecked />
-                CURRENT_PROFIT
-              </label>
-              <label>
-                <input type="radio" name="filter" value="deficit" />
-                DEFICIT_PREMIUM
-              </label>
-            </div>
-            
-            {/* Data Status Indicator */}
-            <div className="data-status" style={{ marginLeft: '20px', fontSize: '12px' }}>
-              <div style={{ color: mt4mt5Data[selectedSetId] ? 'green' : 'red' }}>
-                📡 Live Data: {mt4mt5Data[selectedSetId] ? 'Connected' : 'Disconnected'}
-              </div>
-              <div style={{ color: premiumData[selectedSetId] ? 'green' : 'red' }}>
-                💰 Premium: {premiumData[selectedSetId] ? 'Live' : 'No Data'}
-              </div>
-            </div>
-            
-            <button 
-              className="sync-button"
-              onClick={handleSyncTradeStatus}
-              disabled={tradesLoading}
-              style={{ 
-                marginLeft: '10px', 
-                padding: '8px 16px', 
-                backgroundColor: '#4CAF50', 
-                color: 'white', 
-                border: 'none', 
-                borderRadius: '4px',
-                cursor: tradesLoading ? 'not-allowed' : 'pointer'
-              }}
-            >
-              {tradesLoading ? '🔄 Syncing...' : '🔄 Sync Status'}
-            </button>
-
-            <button 
-              className="cleanup-button"
-              onClick={handleCleanupDatabase}
-              disabled={tradesLoading}
-              style={{ 
-                marginLeft: '10px', 
-                padding: '8px 16px', 
-                backgroundColor: '#FF9800', 
-                color: 'white', 
-                border: 'none', 
-                borderRadius: '4px',
-                cursor: tradesLoading ? 'not-allowed' : 'pointer'
-              }}
-            >
-              {tradesLoading ? '🧹 Cleaning...' : '🧹 Cleanup DB'}
-            </button>
-
-          </div>
+      <div className="trades-container" style={{ marginTop: '20px' }}>
+        <div className="table-header" style={{ 
+          background: 'linear-gradient(135deg, #28a745 0%, #20c997 100%)', 
+          color: 'white', 
+          padding: '15px 20px', 
+          borderRadius: '10px 10px 0 0',
+          marginBottom: '0'
+        }}>
+          <h3 style={{ margin: 0, fontSize: '18px' }}>Active Trades Monitor</h3>
+          <span style={{ fontSize: '14px', opacity: 0.9 }}>
+            Total: {activeTrades.filter(trade => trade.accountSetId === selectedSetId && (trade.status === 'Active' || trade.status === 'Partial')).length} trades
+          </span>
         </div>
-
-        <table className="active-trades-table">
+        
+        <div style={{ overflowX: 'auto', boxShadow: '0 4px 6px rgba(0,0,0,0.1)', borderRadius: '0 0 10px 10px' }}>
+          <table style={{ 
+            width: '100%', 
+            borderCollapse: 'collapse', 
+            fontSize: '13px',
+            backgroundColor: 'white'
+          }}>
           <thead>
-            <tr>
-              <th>MT5 Ticket</th>
-              <th>MT4 Ticket</th>
-              <th>Lot Size</th>
-              <th>MT5 Profit</th>
-              <th>MT4 Profit</th>
-              <th>Opening Premium</th>
-              <th>Cr Premium</th>
-              <th>Deficit Premium</th>
-              <th>Swap</th>
-              <th>Current Profit</th>
-              <th>TP</th>
-              <th>Action</th>
+            <tr style={{ backgroundColor: '#f8f9fa', borderBottom: '2px solid #dee2e6' }}>
+              <th style={{ padding: '12px 8px', textAlign: 'left', fontWeight: '600', color: '#495057', borderRight: '1px solid #dee2e6' }}>MT5 Ticket</th>
+              <th style={{ padding: '12px 8px', textAlign: 'left', fontWeight: '600', color: '#495057', borderRight: '1px solid #dee2e6' }}>MT4 Ticket</th>
+              <th style={{ padding: '12px 8px', textAlign: 'left', fontWeight: '600', color: '#495057', borderRight: '1px solid #dee2e6' }}>Direction</th>
+              <th style={{ padding: '12px 8px', textAlign: 'left', fontWeight: '600', color: '#495057', borderRight: '1px solid #dee2e6' }}>Lot Size</th>
+              <th style={{ padding: '12px 8px', textAlign: 'left', fontWeight: '600', color: '#495057', borderRight: '1px solid #dee2e6' }}>MT5 Profit</th>
+              <th style={{ padding: '12px 8px', textAlign: 'left', fontWeight: '600', color: '#495057', borderRight: '1px solid #dee2e6' }}>MT4 Profit</th>
+              <th style={{ padding: '12px 8px', textAlign: 'left', fontWeight: '600', color: '#495057', borderRight: '1px solid #dee2e6' }}>Opening Premium</th>
+              <th style={{ padding: '12px 8px', textAlign: 'left', fontWeight: '600', color: '#495057', borderRight: '1px solid #dee2e6' }}>Current Premium</th>
+              <th style={{ padding: '12px 8px', textAlign: 'left', fontWeight: '600', color: '#495057', borderRight: '1px solid #dee2e6' }}>Deficit Premium</th>
+              <th style={{ padding: '12px 8px', textAlign: 'left', fontWeight: '600', color: '#495057', borderRight: '1px solid #dee2e6' }}>Swap</th>
+              <th style={{ padding: '12px 8px', textAlign: 'left', fontWeight: '600', color: '#495057', borderRight: '1px solid #dee2e6' }}>Current Profit</th>
+              <th style={{ padding: '12px 8px', textAlign: 'left', fontWeight: '600', color: '#495057', borderRight: '1px solid #dee2e6' }}>TP</th>
+              <th style={{ padding: '12px 8px', textAlign: 'left', fontWeight: '600', color: '#495057' }}>Action</th>
             </tr>
           </thead>
           <tbody>
             {tradesLoading ? (
               <tr>
-                <td colSpan="12" style={{ textAlign: 'center', padding: '20px' }}>
-                  Loading trades...
+                <td colSpan="13" style={{ textAlign: 'center', padding: '40px', color: '#6c757d' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '10px' }}>
+                    <div style={{ width: '20px', height: '20px', border: '3px solid #f3f3f3', borderTop: '3px solid #28a745', borderRadius: '50%', animation: 'spin 1s linear infinite' }}></div>
+                    Loading active trades...
+                  </div>
                 </td>
               </tr>
-            ) : activeTrades.length === 0 ? (
+            ) : activeTrades.filter(trade => trade.accountSetId === selectedSetId && (trade.status === 'Active' || trade.status === 'Partial')).length === 0 ? (
               <tr>
-                <td colSpan="12" style={{ textAlign: 'center', padding: '20px' }}>
-                  No active trades found
+                <td colSpan="13" style={{ textAlign: 'center', padding: '40px', color: '#6c757d' }}>
+                  <div style={{ fontSize: '16px' }}>📈 No active trades found</div>
+                  <div style={{ fontSize: '12px', marginTop: '5px' }}>Active positions will appear here when you execute trades</div>
                 </td>
               </tr>
             ) : (
@@ -300,20 +264,29 @@ export default function ActiveTrades() {
                 console.log('🔍 RENDER: Selected account set:', selectedSetId);
                 console.log('🔍 RENDER: MT4/MT5 cache status:', { cacheKeys: Object.keys(mt4mt5Data), selectedCache: !!mt4mt5Data[selectedSetId] });
                 
-                // Filter trades to show only active ones for the selected account set
+                // Filter trades to show active and partial trades for the selected account set
                 const filteredTrades = activeTrades.filter((trade) => {
-                  // Only show trades that match the selected account set and are actually active
-                  return trade.accountSetId === selectedSetId && trade.status === 'Active';
+                  // Show trades that match the selected account set and are active or partial
+                  return trade.accountSetId === selectedSetId && (trade.status === 'Active' || trade.status === 'Partial');
                 });
                 
                 console.log('🔍 RENDER: Filtered trades for display:', filteredTrades.length);
                 
                 return filteredTrades.map((trade) => {
-                // Determine which broker is MT5 and which is MT4
-                const mt5Ticket = trade.broker1?.terminal === 'MT5' ? 
-                  trade.broker1Ticket : trade.broker2Ticket;
-                const mt4Ticket = trade.broker1?.terminal === 'MT4' ? 
-                  trade.broker1Ticket : trade.broker2Ticket;
+                // Handle partial trades - some broker data might be null
+                const broker1Data = trade.broker1 || {};
+                const broker2Data = trade.broker2 || {};
+                
+                // Determine which broker is MT5 and which is MT4 (handle partial trades)
+                const mt5Ticket = (broker1Data.terminal === 'MT5' && trade.broker1Ticket) ? 
+                  trade.broker1Ticket : 
+                  (broker2Data.terminal === 'MT5' && trade.broker2Ticket) ? 
+                  trade.broker2Ticket : null;
+                  
+                const mt4Ticket = (broker1Data.terminal === 'MT4' && trade.broker1Ticket) ? 
+                  trade.broker1Ticket : 
+                  (broker2Data.terminal === 'MT4' && trade.broker2Ticket) ? 
+                  trade.broker2Ticket : null;
 
                 // Get profit data using new service
                 const profitData = mt4mt5Service.calculateTradeProfit(selectedSetId, mt5Ticket, mt4Ticket);
@@ -357,44 +330,142 @@ export default function ActiveTrades() {
                   });
                 }
 
+                const rowIndex = filteredTrades.indexOf(trade);
                 return (
-                  <tr key={trade.tradeId}>
-                    <td>{mt5Ticket}</td>
-                    <td>{mt4Ticket}</td>
-                    <td>{trade.broker1Volume}</td>
-                    <td style={{ color: profitData ? 'inherit' : 'red' }}>
-                      {profitData ? mt5Profit.toFixed(2) : 'No Data'}
+                  <tr key={trade.tradeId} style={{ 
+                    backgroundColor: trade.status === 'Partial' ? '#fff3cd' : rowIndex % 2 === 0 ? '#ffffff' : '#f8f9fa',
+                    borderBottom: '1px solid #dee2e6',
+                    transition: 'background-color 0.2s'
+                  }}
+                  onMouseEnter={e => e.target.parentElement.style.backgroundColor = '#e3f2fd'}
+                  onMouseLeave={e => e.target.parentElement.style.backgroundColor = trade.status === 'Partial' ? '#fff3cd' : rowIndex % 2 === 0 ? '#ffffff' : '#f8f9fa'}
+                  >
+                    <td style={{ padding: '10px 8px', borderRight: '1px solid #dee2e6', fontFamily: 'monospace' }}>
+                      <span title={`Comment: ${trade.comment || 'N/A'}`}>
+                        {mt5Ticket || <em style={{color: '#999'}}>No MT5</em>}
+                      </span>
+                      {trade.status === 'Partial' && <div style={{fontSize: '10px', color: '#856404', fontWeight: '600'}}>[PARTIAL]</div>}
                     </td>
-                    <td style={{ color: profitData ? 'inherit' : 'red' }}>
-                      {profitData ? mt4Profit.toFixed(2) : 'No Data'}
+                    <td style={{ padding: '10px 8px', borderRight: '1px solid #dee2e6', fontFamily: 'monospace' }}>
+                      <span title={`Status: ${trade.status}`}>
+                        {mt4Ticket || <em style={{color: '#999'}}>No MT4</em>}
+                      </span>
+                      {trade.status === 'Partial' && <div style={{fontSize: '10px', color: '#856404', fontWeight: '600'}}>[PARTIAL]</div>}
                     </td>
-                    <td>{parseFloat(trade.executionPremium).toFixed(2)}</td>
-                    <td style={{ color: premiumCalc ? 'inherit' : 'red' }}>
-                      {premiumCalc ? currentPremium.toFixed(2) : 'No Data'}
+                    <td style={{ padding: '10px 8px', borderRight: '1px solid #dee2e6' }}>
+                      <span style={{ 
+                        color: trade.broker1Direction === 'Buy' ? '#28a745' : '#dc3545',
+                        fontWeight: '600',
+                        fontSize: '12px',
+                        padding: '2px 6px',
+                        borderRadius: '3px',
+                        backgroundColor: trade.broker1Direction === 'Buy' ? '#d4edda' : '#f8d7da'
+                      }}>
+                        {trade.broker1Direction ? 
+                          `${trade.broker1Direction}/${trade.broker1Direction === 'Buy' ? 'Sell' : 'Buy'}` :
+                          trade.broker2Direction ? 
+                            `${trade.broker2Direction === 'Buy' ? 'Sell' : 'Buy'}/${trade.broker2Direction}` :
+                            'N/A'
+                        }
+                      </span>
                     </td>
-                    <td style={{ color: premiumCalc ? 'inherit' : 'red' }}>
-                      {premiumCalc ? deficitPremium.toFixed(2) : 'No Data'}
+                    <td style={{ padding: '10px 8px', borderRight: '1px solid #dee2e6', textAlign: 'center' }}>
+                      {trade.broker1Volume || trade.broker2Volume || 'N/A'}
                     </td>
-                    <td style={{ color: profitData ? 'inherit' : 'red' }}>
-                      {profitData ? totalSwap.toFixed(2) : 'No Data'}
+                    <td style={{ 
+                      padding: '10px 8px', 
+                      borderRight: '1px solid #dee2e6', 
+                      color: profitData ? (mt5Profit >= 0 ? '#28a745' : '#dc3545') : '#dc3545',
+                      fontWeight: '600',
+                      textAlign: 'right'
+                    }}>
+                      {profitData ? `$${mt5Profit.toFixed(2)}` : 'No Data'}
                     </td>
-                    <td style={{ color: profitData ? 'inherit' : 'red' }}>
-                      {profitData ? totalProfit.toFixed(2) : 'No Data'}
+                    <td style={{ 
+                      padding: '10px 8px', 
+                      borderRight: '1px solid #dee2e6', 
+                      color: profitData ? (mt4Profit >= 0 ? '#28a745' : '#dc3545') : '#dc3545',
+                      fontWeight: '600',
+                      textAlign: 'right'
+                    }}>
+                      {profitData ? `$${mt4Profit.toFixed(2)}` : 'No Data'}
                     </td>
-                    <td>
-                      <div className="tp-edit">
+                    <td style={{ padding: '10px 8px', borderRight: '1px solid #dee2e6', textAlign: 'right' }}>
+                      {parseFloat(trade.executionPremium).toFixed(5)}
+                    </td>
+                    <td style={{ 
+                      padding: '10px 8px', 
+                      borderRight: '1px solid #dee2e6', 
+                      textAlign: 'right',
+                      color: premiumCalc ? 'inherit' : '#dc3545'
+                    }}>
+                      {premiumCalc ? currentPremium.toFixed(5) : 'No Data'}
+                    </td>
+                    <td style={{ 
+                      padding: '10px 8px', 
+                      borderRight: '1px solid #dee2e6', 
+                      textAlign: 'right',
+                      color: premiumCalc ? (deficitPremium >= 0 ? '#28a745' : '#dc3545') : '#dc3545'
+                    }}>
+                      {premiumCalc ? deficitPremium.toFixed(5) : 'No Data'}
+                    </td>
+                    <td style={{ 
+                      padding: '10px 8px', 
+                      borderRight: '1px solid #dee2e6', 
+                      textAlign: 'right',
+                      color: profitData ? (totalSwap >= 0 ? '#28a745' : '#dc3545') : '#dc3545'
+                    }}>
+                      {profitData ? `$${totalSwap.toFixed(2)}` : 'No Data'}
+                    </td>
+                    <td style={{ 
+                      padding: '10px 8px', 
+                      borderRight: '1px solid #dee2e6', 
+                      textAlign: 'right',
+                      fontWeight: '700',
+                      color: profitData ? (totalProfit >= 0 ? '#28a745' : '#dc3545') : '#dc3545',
+                      fontSize: '14px'
+                    }}>
+                      {profitData ? `$${totalProfit.toFixed(2)}` : 'No Data'}
+                    </td>
+                    <td style={{ padding: '10px 8px', borderRight: '1px solid #dee2e6' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
                         <input 
                           type="number" 
-                          className="tp-input" 
-                          placeholder={trade.takeProfit || "900"} 
+                          style={{
+                            width: '60px',
+                            padding: '4px',
+                            border: '1px solid #ddd',
+                            borderRadius: '3px',
+                            fontSize: '11px'
+                          }}
+                          placeholder={trade.takeProfit || "TP"} 
                         />
-                        <button className="save-tp-btn">💾</button>
+                        <button style={{
+                          padding: '4px 8px',
+                          backgroundColor: '#007bff',
+                          color: 'white',
+                          border: 'none',
+                          borderRadius: '3px',
+                          fontSize: '11px',
+                          cursor: 'pointer'
+                        }}>💾</button>
                       </div>
                     </td>
-                    <td>
+                    <td style={{ padding: '10px 8px' }}>
                       <button 
-                        className="close-btn"
+                        style={{
+                          backgroundColor: '#dc3545',
+                          color: 'white',
+                          border: 'none',
+                          padding: '6px 12px',
+                          borderRadius: '4px',
+                          fontSize: '12px',
+                          cursor: 'pointer',
+                          fontWeight: '600'
+                        }}
                         onClick={() => handleCloseTrade(trade.tradeId)}
+                        onMouseEnter={e => e.target.style.backgroundColor = '#c82333'}
+                        onMouseLeave={e => e.target.style.backgroundColor = '#dc3545'}
                       >
                         × Close
                       </button>
@@ -407,19 +478,40 @@ export default function ActiveTrades() {
           </tbody>
         </table>
 
-        <div className="table-footer">
-          <div className="grand-total">
-            <strong>Grand Total: ${activeTrades
-              .filter(trade => trade.accountSetId === selectedSetId && trade.status === 'Active')
-              .reduce((total, trade) => {
-                const mt5Ticket = trade.broker1?.terminal === 'MT5' ? 
-                  trade.broker1Ticket : trade.broker2Ticket;
-                const mt4Ticket = trade.broker1?.terminal === 'MT4' ? 
-                  trade.broker1Ticket : trade.broker2Ticket;
+        </div>
+        
+        <div style={{ 
+          background: 'linear-gradient(135deg, #17a2b8 0%, #138496 100%)', 
+          color: 'white', 
+          padding: '15px 20px', 
+          borderRadius: '0 0 10px 10px',
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center'
+        }}>
+          <div>
+            <strong style={{ fontSize: '18px' }}>
+              Total P&L: $
+              {activeTrades
+                .filter(trade => trade.accountSetId === selectedSetId && (trade.status === 'Active' || trade.status === 'Partial'))
+                .reduce((total, trade) => {
+                  const mt5Ticket = trade.broker1?.terminal === 'MT5' ? 
+                    trade.broker1Ticket : trade.broker2Ticket;
+                  const mt4Ticket = trade.broker1?.terminal === 'MT4' ? 
+                    trade.broker1Ticket : trade.broker2Ticket;
 
-                const profitData = mt4mt5Service.calculateTradeProfit(selectedSetId, mt5Ticket, mt4Ticket);
-                return total + profitData.totalProfit;
-              }, 0).toFixed(2)}</strong>
+                  const profitData = mt4mt5Service.calculateTradeProfit(selectedSetId, mt5Ticket, mt4Ticket);
+                  return total + (profitData?.totalProfit || 0);
+                }, 0).toFixed(2)}
+            </strong>
+          </div>
+          <div style={{ display: 'flex', gap: '15px', fontSize: '14px', opacity: 0.9 }}>
+            <div>
+              Active: {activeTrades.filter(trade => trade.accountSetId === selectedSetId && trade.status === 'Active').length}
+            </div>
+            <div>
+              Partial: {activeTrades.filter(trade => trade.accountSetId === selectedSetId && trade.status === 'Partial').length}
+            </div>
           </div>
         </div>
       </div>

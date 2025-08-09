@@ -20,7 +20,11 @@ async function checkTradingApi() {
     try {
       // Test with dummy credentials for ConnectEx
       await client.get('/ConnectEx', {
-        params: { user: '0', password: '0', server: 'test' }
+        params: { 
+          user: process.env.MT4_TEST_USER || 'test_user', 
+          password: process.env.MT4_TEST_PASSWORD || 'test_pass', 
+          server: process.env.MT4_TEST_SERVER || 'test_server' 
+        }
       });
       return true;
     } catch (err) {

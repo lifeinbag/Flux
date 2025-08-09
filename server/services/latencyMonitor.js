@@ -1,5 +1,6 @@
 const axios = require('axios');
 const https = require('https');
+const { sequelize } = require('../models');
 
 const httpsAgent = new https.Agent({
   rejectUnauthorized: false,
@@ -12,6 +13,31 @@ class LatencyMonitor {
     this.cache = new Map();
     this.CACHE_DURATION = 15 * 60 * 1000; // 15 minutes
     this.cleanupInterval = setInterval(() => this.cleanup(), this.CACHE_DURATION);
+    this.initializeDatabase();
+  }
+
+  async initializeDatabase() {
+    try {
+      await sequelize.query(`
+        CREATE TABLE IF NOT EXISTS broker_latency (
+          id SERIAL PRIMARY KEY,
+          broker_id UUID NOT NULL,
+          latency_type VARCHAR(20) NOT NULL,
+          latency_ms INTEGER NOT NULL,
+          timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          date DATE DEFAULT CURRENT_DATE
+        )
+      `);
+
+      await sequelize.query(`
+        CREATE INDEX IF NOT EXISTS idx_broker_latency_broker_type_date 
+        ON broker_latency (broker_id, latency_type, date)
+      `);
+
+      console.log('✅ Latency monitoring database initialized');
+    } catch (err) {
+      console.error('Failed to initialize latency database:', err.message);
+    }
   }
 
   getCacheKey(brokerId, type) {
@@ -49,34 +75,76 @@ class LatencyMonitor {
     );
     
     data.lastCleanup = now;
+    
+    // Save to database for persistence and daily averages
+    this.saveLatencyToDatabase(brokerId, type, latency).catch(err => {
+      console.error('Failed to save latency to database:', err.message);
+    });
   }
 
-  getLatencyStats(brokerId, type) {
+  async saveLatencyToDatabase(brokerId, type, latency) {
+    try {
+      await sequelize.query(`
+        INSERT INTO broker_latency (broker_id, latency_type, latency_ms)
+        VALUES (:brokerId, :type, :latency)
+      `, {
+        replacements: { brokerId, type, latency }
+      });
+    } catch (err) {
+      console.error('Error saving latency to database:', err.message);
+    }
+  }
+
+  async getLatencyStats(brokerId, type) {
+    // Get current from in-memory cache
     const key = this.getCacheKey(brokerId, type);
     const data = this.cache.get(key);
+    let current = 0;
     
-    if (!data || data.records.length === 0) {
-      return {
-        current: 0,
-        average: 0,
-        min: 0,
-        max: 0,
-        count: 0
-      };
+    if (data && data.records.length > 0) {
+      current = data.records[data.records.length - 1].latency;
+    } else {
+      // Fallback: get most recent from database
+      try {
+        const [results] = await sequelize.query(`
+          SELECT latency_ms FROM broker_latency 
+          WHERE broker_id = :brokerId AND latency_type = :type 
+          ORDER BY timestamp DESC LIMIT 1
+        `, {
+          replacements: { brokerId, type }
+        });
+        
+        if (results.length > 0) {
+          current = results[0].latency_ms;
+        }
+      } catch (err) {
+        console.error('Error getting current latency from database:', err.message);
+      }
     }
     
-    const latencies = data.records.map(r => r.latency);
-    const current = latencies[latencies.length - 1] || 0;
-    const average = latencies.reduce((sum, l) => sum + l, 0) / latencies.length;
-    const min = Math.min(...latencies);
-    const max = Math.max(...latencies);
+    // Get daily average from database
+    let average = 0;
+    try {
+      const [results] = await sequelize.query(`
+        SELECT AVG(latency_ms)::INTEGER as avg_latency 
+        FROM broker_latency 
+        WHERE broker_id = :brokerId AND latency_type = :type 
+          AND date = CURRENT_DATE
+      `, {
+        replacements: { brokerId, type }
+      });
+      
+      if (results.length > 0 && results[0].avg_latency) {
+        average = results[0].avg_latency;
+      }
+    } catch (err) {
+      console.error('Error getting daily average latency:', err.message);
+    }
     
     return {
       current: Math.round(current),
       average: Math.round(average),
-      min: Math.round(min),
-      max: Math.round(max),
-      count: latencies.length
+      count: data ? data.records.length : 0
     };
   }
 

@@ -18,7 +18,24 @@ export default function TradeExecution({
   const [volume, setVolume] = useState('');
   const [targetPremium, setTargetPremium] = useState('');
   const [takeProfit, setTakeProfit] = useState('');
+  const [takeProfitMode, setTakeProfitMode] = useState('None'); // 'None', 'Premium', 'Amount'
   const [scalping, setScalping] = useState(false);
+
+  // Latency monitoring state
+  const [latencyData, setLatencyData] = useState({
+    broker1: {
+      lastOrderLatency: null,
+      avgOrderLatency: null,
+      lastQuoteLatency: null,
+      avgQuoteLatency: null
+    },
+    broker2: {
+      lastOrderLatency: null,
+      avgOrderLatency: null,
+      lastQuoteLatency: null,
+      avgQuoteLatency: null
+    }
+  });
 
   // ─── Premium Spread state ───
   const [futureQuote, setFutureQuote] = useState(null);
@@ -26,17 +43,7 @@ export default function TradeExecution({
   const [buyPremium, setBuyPremium] = useState(0);
   const [sellPremium, setSellPremium] = useState(0);
 
-  // ─── Latency monitoring state ───
-  const [latencyData, setLatencyData] = useState({
-    broker1: {
-      orderSend: { current: 0, average: 0 },
-      quotePing: { current: 0, average: 0 }
-    },
-    broker2: {
-      orderSend: { current: 0, average: 0 },
-      quotePing: { current: 0, average: 0 }
-    }
-  });
+  // Removed latency monitoring - not needed
 
   // ─── STANDALONE MODE: Load account sets if not provided ───
   const [accountSets, setAccountSets] = useState([]);
@@ -96,6 +103,46 @@ export default function TradeExecution({
 
   const broker1Label = `Broker 1 (${broker1Terminal})`;
   const broker2Label = `Broker 2 (${broker2Terminal})`;
+
+  // Fetch latency data for brokers
+  const fetchLatencyData = useCallback(async () => {
+    if (!broker1Id || !broker2Id) return;
+
+    try {
+      const [broker1Response, broker2Response] = await Promise.all([
+        API.get(`/trading/latency/${broker1Id}`),
+        API.get(`/trading/latency/${broker2Id}`)
+      ]);
+
+      setLatencyData({
+        broker1: {
+          lastOrderLatency: broker1Response.data.data?.orderSend?.current || null,
+          avgOrderLatency: broker1Response.data.data?.orderSend?.average || null,
+          lastQuoteLatency: broker1Response.data.data?.quotePing?.current || null,
+          avgQuoteLatency: broker1Response.data.data?.quotePing?.average || null
+        },
+        broker2: {
+          lastOrderLatency: broker2Response.data.data?.orderSend?.current || null,
+          avgOrderLatency: broker2Response.data.data?.orderSend?.average || null,
+          lastQuoteLatency: broker2Response.data.data?.quotePing?.current || null,
+          avgQuoteLatency: broker2Response.data.data?.quotePing?.average || null
+        }
+      });
+    } catch (err) {
+      console.log('Failed to fetch latency data:', err.message);
+    }
+  }, [broker1Id, broker2Id]);
+
+  // Load latency data when account set changes
+  useEffect(() => {
+    if (accountSet && broker1Id && broker2Id) {
+      fetchLatencyData();
+      
+      // Refresh latency data every 30 seconds
+      const interval = setInterval(fetchLatencyData, 30000);
+      return () => clearInterval(interval);
+    }
+  }, [fetchLatencyData, accountSet, broker1Id, broker2Id]);
 
   // ─── Smart Symbol Detection ──────────────────────────────
   const handleSmartSymbolRefresh = useCallback(async (typedSymbol, symbolsList, brokerId, terminal) => {
@@ -160,99 +207,60 @@ export default function TradeExecution({
     }
   }, [futureQuote, spotQuote]);
 
-  // ─── Latency monitoring ───
-  const fetchLatencyData = useCallback(async () => {
-    if (!broker1Id || !broker2Id) return;
+  // Removed latency monitoring - not needed
 
-    try {
-      const [broker1Response, broker2Response] = await Promise.all([
-        API.get(`/trading/latency/${broker1Id}`),
-        API.get(`/trading/latency/${broker2Id}`)
-      ]);
+  // Removed latency monitoring - not needed
 
-      setLatencyData({
-        broker1: broker1Response.data.data || {
-          orderSend: { current: 0, average: 0 },
-          quotePing: { current: 0, average: 0 }
-        },
-        broker2: broker2Response.data.data || {
-          orderSend: { current: 0, average: 0 },
-          quotePing: { current: 0, average: 0 }
-        }
-      });
-    } catch (err) {
-      // Failed to fetch latency data
-    }
-  }, [broker1Id, broker2Id]);
-
-  // ─── Latency monitoring interval ───
-  useEffect(() => {
-    if (!accountSet || !broker1Id || !broker2Id) return;
-
-    // Initial fetch
-    fetchLatencyData();
-
-    // Set up interval to fetch latency data every 10 seconds
-    const latencyInterval = setInterval(fetchLatencyData, 10000);
-
-    return () => {
-      clearInterval(latencyInterval);
-    };
-  }, [fetchLatencyData, accountSet, broker1Id, broker2Id]);
-
-  // ─── Test latency functionality ───
-  const testLatency = useCallback(async () => {
-    if (!broker1Id || !broker2Id) return;
-
-    try {
-      setLoading(true);
-      
-      // Test latency for both brokers
-      const [broker1Test, broker2Test] = await Promise.all([
-        API.post('/trading/test-order-latency', {
-          brokerId: broker1Id,
-          terminal: broker1Terminal,
-          symbol: selectedBroker1 || 'EURUSD'
-        }),
-        API.post('/trading/test-order-latency', {
-          brokerId: broker2Id,
-          terminal: broker2Terminal,
-          symbol: selectedBroker2 || 'EURUSD'
-        })
-      ]);
-
-      // Refresh latency data after testing
-      await fetchLatencyData();
-      
-      setLoading(false);
-    } catch (err) {
-      setLoading(false);
-      setError('Failed to test latency: ' + err.message);
-    }
-  }, [broker1Id, broker2Id, broker1Terminal, broker2Terminal, selectedBroker1, selectedBroker2, fetchLatencyData]);
+  // Removed test latency - not needed
 
   // ─── Order execution functionality ───
   const executeOrder = useCallback(async (orderType) => {
+    // Clear any previous errors
+    setError('');
+    
+    // Validation
     if (!selectedBroker1 || !selectedBroker2 || !volume) {
       setError('Please select symbols and enter volume');
       return;
     }
 
-    if (!accountSet?.id) {
+    if (!accountSet?.id && !accountSet?._id) {
       setError('Please select an account set');
       return;
     }
 
+    // Set loading state immediately
+    setLoading(true);
+    
     try {
-      setLoading(true);
-      setError('');
-
-      const orderData = {
-        accountSetId: accountSet.id,
+      console.log('🚀 Executing order:', {
+        orderType,
+        accountSetId: accountSet.id || accountSet._id,
         direction,
         volume: parseFloat(volume),
-        takeProfit: takeProfit ? parseFloat(takeProfit) : null,
-        stopLoss: null, // You can add stop loss input if needed
+        selectedBroker1,
+        selectedBroker2
+      });
+
+      // Calculate take profit based on mode
+      let takeProfitValue = null;
+      if (takeProfitMode === 'None' || !takeProfit) {
+        takeProfitValue = null;
+      } else if (takeProfitMode === 'Premium') {
+        // For premium mode, store as premium value
+        takeProfitValue = parseFloat(takeProfit);
+      } else if (takeProfitMode === 'Amount') {
+        // For amount mode, store as dollar amount
+        takeProfitValue = parseFloat(takeProfit);
+      }
+
+      const orderData = {
+        accountSetId: accountSet.id || accountSet._id,
+        direction,
+        volume: parseFloat(volume),
+        takeProfit: takeProfitValue,
+        takeProfitMode, // Send the mode to server
+        stopLoss: null,
         scalpingMode: scalping,
         comment: 'FluxNetwork Trade'
       };
@@ -261,37 +269,50 @@ export default function TradeExecution({
       let successMessage;
 
       if (orderType === 'current') {
+        console.log('📤 Sending execute-current request...');
         response = await API.post('/trading/execute-current', orderData);
         successMessage = 'Trade executed successfully at current premium!';
       } else if (orderType === 'target') {
         if (!targetPremium) {
-          setError('Please enter target premium');
-          setLoading(false);
-          return;
+          throw new Error('Please enter target premium');
         }
         
         orderData.targetPremium = parseFloat(targetPremium);
+        console.log('📤 Sending execute-target request...');
         response = await API.post('/trading/execute-target', orderData);
         successMessage = 'Pending order created successfully!';
       }
       
-      // Refresh latency data after order execution
-      await fetchLatencyData();
-      
-      setLoading(false);
+      console.log('✅ Order execution response:', response.data);
       
       // Clear form on success
       setVolume('');
       setTargetPremium('');
       setTakeProfit('');
       
-      // Show success message (you can replace with proper toast notification)
-      console.log(successMessage, response.data);
+      // Show success message
+      alert(successMessage);
+      
+      // If it's a current trade execution and successful, suggest user check active trades
+      if (orderType === 'current' && response.data?.success) {
+        console.log('✅ Trade created, should now appear in active trades');
+      }
       
     } catch (err) {
-      setLoading(false);
+      console.error('❌ Order execution error:', err);
       const errorMessage = err.response?.data?.message || err.message || 'Order execution failed';
       setError(errorMessage);
+      
+    } finally {
+      // Always turn off loading, regardless of success or failure
+      setLoading(false);
+      
+      // Refresh latency data after order execution
+      try {
+        await fetchLatencyData();
+      } catch (latencyErr) {
+        console.log('Failed to refresh latency after order:', latencyErr.message);
+      }
     }
   }, [selectedBroker1, selectedBroker2, volume, direction, targetPremium, takeProfit, scalping, accountSet, fetchLatencyData]);
 
@@ -367,77 +388,78 @@ export default function TradeExecution({
     };
   }, [selectedBroker1, selectedBroker2, accountSet?._id, accountSet?.symbolsLocked]);
 
-  // ✅ FIXED: Symbol loading - Add debouncing and better error handling
+  // Load symbols from selected account set brokers
   useEffect(() => {
-    console.log('🔍 TradeExecution: Symbol loading effect triggered for account set:', accountSet?.id);
-    
-    // bail out if no account set or no brokers
+    // Skip if no account set or brokers
     if (!accountSet || !brokers.length || brokers.length < 2) {
-      console.log('⚠️ TradeExecution: Bailing out - missing account set or brokers:', { 
-        hasAccountSet: !!accountSet, 
-        brokerCount: brokers.length 
-      });
       setBroker1Symbols([]);
       setBroker2Symbols([]);
-      setError('');
+      setLoading(false);
       return;
     }
 
-    console.log('📋 TradeExecution: Loading symbols for brokers:', { 
-      broker1Id, broker1Terminal, broker2Id, broker2Terminal,
-      symbolsLocked: accountSet?.symbolsLocked 
+    setLoading(true);
+    setError('');
+    
+    console.log('Loading symbols for:', { 
+      accountSetId: accountSet.id, 
+      symbolsLocked: accountSet.symbolsLocked,
+      broker1Id, 
+      broker1Terminal, 
+      broker2Id, 
+      broker2Terminal 
     });
 
-    // Clear previous state immediately
-    setBroker1Symbols([]);
-    setBroker2Symbols([]);
-    setError('');
-    setLoading(true);
-
-    // Add delay to prevent race conditions when switching account sets
-    const timeoutId = setTimeout(async () => {
+    const loadSymbols = async () => {
       try {
         let symbols1 = [], symbols2 = [];
 
-// Load symbols for broker at position 1
-if (broker1Id && broker1Terminal) {
-  try {
-    const res = await fetchSymbols(broker1Terminal, broker1Id);
-    const raw = res.data?.symbols;
-    // Normalize into an array of symbol strings, handling both object and string entries
-    symbols1 = (Array.isArray(raw) ? raw : Object.values(raw || {}))
-      .map(o => typeof o === 'string' ? o : o.currency || o.symbol || o.name)
-      .filter(sym => sym && sym.trim());
-  } catch (err) {
-    // Failed to load symbols for Broker 1
-  }
-}
+        // Load symbols for broker 1
+        if (broker1Id && broker1Terminal) {
+          try {
+            const res = await fetchSymbols(broker1Terminal, broker1Id);
+            const raw = res.data?.symbols;
+            
+            if (raw) {
+              symbols1 = (Array.isArray(raw) ? raw : Object.values(raw || {}))
+                .map(o => typeof o === 'string' ? o : o.currency || o.symbol || o.name)
+                .filter(sym => sym && sym.trim());
+            }
+          } catch (err) {
+            console.error('Failed to load symbols for Broker 1:', err.message);
+          }
+        }
 
-// Load symbols for broker at position 2
-if (broker2Id && broker2Terminal) {
-  try {
-    const res = await fetchSymbols(broker2Terminal, broker2Id);
-    const raw = res.data?.symbols;
-    // Same normalization logic for Broker 2
-    symbols2 = (Array.isArray(raw) ? raw : Object.values(raw || {}))
-      .map(o => typeof o === 'string' ? o : o.currency || o.symbol || o.name)
-      .filter(sym => sym && sym.trim());
-  } catch (err) {
-    // Failed to load symbols for Broker 2
-  }
-}
+        // Load symbols for broker 2
+        if (broker2Id && broker2Terminal) {
+          try {
+            const res = await fetchSymbols(broker2Terminal, broker2Id);
+            const raw = res.data?.symbols;
+            
+            if (raw) {
+              symbols2 = (Array.isArray(raw) ? raw : Object.values(raw || {}))
+                .map(o => typeof o === 'string' ? o : o.currency || o.symbol || o.name)
+                .filter(sym => sym && sym.trim());
+            }
+          } catch (err) {
+            console.error('Failed to load symbols for Broker 2:', err.message);
+          }
+        }
 
-setBroker1Symbols(symbols1 || []);
-setBroker2Symbols(symbols2 || []);
-setLoading(false);
-} catch (err) {
-  setError(`Error loading symbols: ${err.message}`);
-  setLoading(false);
-}
-}, 500);
+        setBroker1Symbols(symbols1 || []);
+        setBroker2Symbols(symbols2 || []);
+        setLoading(false);
+      } catch (err) {
+        console.error('Symbol loading error:', err.message);
+        setLoading(false);
+      }
+    };
+    loadSymbols();
 
 
-    return () => clearTimeout(timeoutId);
+    return () => {
+      // Cleanup if needed
+    };
   }, [accountSet?._id, broker1Id, broker2Id, broker1Terminal, broker2Terminal]);
 
   const onBroker1Change = async (e) => {
@@ -534,7 +556,7 @@ setLoading(false);
           </div>
           <div className="symbol-inputs">
             <div className="input-group">
-              <label>{broker1Label}</label>
+              <label>{broker1Label} ({broker1Symbols.length} symbols)</label>
               <div className="input-wrapper">
                 <input
                   type="text"
@@ -549,7 +571,7 @@ setLoading(false);
             </div>
             
             <div className="input-group">
-              <label>{broker2Label}</label>
+              <label>{broker2Label} ({broker2Symbols.length} symbols)</label>
               <div className="input-wrapper">
                 <input
                   type="text"
@@ -642,14 +664,67 @@ setLoading(false);
             </div>
             <div className="param-group">
               <label>Take Profit</label>
-              <input
-                type="number"
-                step="0.00001"
-                placeholder="0.00000"
-                value={takeProfit}
-                onChange={e => setTakeProfit(e.target.value)}
-                className="param-input"
-              />
+              
+              {/* Take Profit Mode Selection */}
+              <div style={{ display: 'flex', gap: '10px', marginBottom: '8px', flexWrap: 'wrap' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '13px', cursor: 'pointer' }}>
+                  <input 
+                    type="radio" 
+                    name="takeProfitMode" 
+                    value="None" 
+                    checked={takeProfitMode === 'None'}
+                    onChange={e => {
+                      setTakeProfitMode(e.target.value);
+                      if (e.target.value === 'None') setTakeProfit('');
+                    }}
+                  />
+                  None
+                </label>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '13px', cursor: 'pointer' }}>
+                  <input 
+                    type="radio" 
+                    name="takeProfitMode" 
+                    value="Premium" 
+                    checked={takeProfitMode === 'Premium'}
+                    onChange={e => setTakeProfitMode(e.target.value)}
+                  />
+                  TP (In Premium Value)
+                </label>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '13px', cursor: 'pointer' }}>
+                  <input 
+                    type="radio" 
+                    name="takeProfitMode" 
+                    value="Amount" 
+                    checked={takeProfitMode === 'Amount'}
+                    onChange={e => setTakeProfitMode(e.target.value)}
+                  />
+                  TP In $(Amount)
+                </label>
+              </div>
+              
+              {/* Take Profit Input - only show when not 'None' */}
+              {takeProfitMode !== 'None' && (
+                <input
+                  type="number"
+                  step={takeProfitMode === 'Premium' ? '0.00001' : '0.01'}
+                  placeholder={takeProfitMode === 'Premium' ? '0.00000' : '0.00'}
+                  value={takeProfit}
+                  onChange={e => setTakeProfit(e.target.value)}
+                  className="param-input"
+                />
+              )}
+              
+              {/* Helper text */}
+              {takeProfitMode === 'Premium' && (
+                <div style={{ fontSize: '11px', color: '#666', marginTop: '4px' }}>
+                  {direction === 'Buy' ? 'Maps to Sell Premium when order executes' : 'Maps to Buy Premium when order executes'}
+                </div>
+              )}
+              {takeProfitMode === 'Amount' && (
+                <div style={{ fontSize: '11px', color: '#666', marginTop: '4px' }}>
+                  Take profit when total profit reaches this $ amount
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -664,25 +739,19 @@ setLoading(false);
             <button 
               className="action-btn current-premium"
               onClick={() => executeOrder('current')}
-              disabled={loading || !selectedBroker1 || !selectedBroker2 || !volume}
+              disabled={loading || !selectedBroker1 || !selectedBroker2 || !volume || !accountSet}
+              title={!accountSet ? 'Please select an account set first' : (!selectedBroker1 || !selectedBroker2) ? 'Please select symbols for both brokers' : !volume ? 'Please enter volume' : 'Execute trade at current premium'}
             >
-              <div className="btn-content">Execute at Current Premium</div>
+              <div className="btn-content">{loading ? 'Executing...' : 'Execute at Current Premium'}</div>
               <div className="btn-glow"></div>
             </button>
             <button 
               className="action-btn target-premium"
               onClick={() => executeOrder('target')}
-              disabled={loading || !selectedBroker1 || !selectedBroker2 || !volume || !targetPremium}
+              disabled={loading || !selectedBroker1 || !selectedBroker2 || !volume || !targetPremium || !accountSet}
+              title={!accountSet ? 'Please select an account set first' : (!selectedBroker1 || !selectedBroker2) ? 'Please select symbols for both brokers' : !volume ? 'Please enter volume' : !targetPremium ? 'Please enter target premium' : 'Create pending order at target premium'}
             >
-              <div className="btn-content">Execute at Target Premium</div>
-              <div className="btn-glow"></div>
-            </button>
-            <button 
-              className="action-btn test-latency"
-              onClick={testLatency}
-              disabled={loading || !broker1Id || !broker2Id}
-            >
-              <div className="btn-content">Test Latency</div>
+              <div className="btn-content">{loading ? 'Creating Order...' : 'Execute at Target Premium'}</div>
               <div className="btn-glow"></div>
             </button>
           </div>
@@ -702,60 +771,6 @@ setLoading(false);
           </div>
         </div>
 
-        {/* Latency Monitoring Panel */}
-        <div className="trading-panel latency-panel">
-          <div className="panel-header">
-            <Activity style={{ width: '20px', height: '20px' }} />
-            <h2>OrderSend Latency</h2>
-          </div>
-          <div className="latency-grid">
-            {/* Broker 1 Latency */}
-            <div className="latency-broker">
-              <h3>{broker1Label}</h3>
-              <div className="latency-metrics">
-                <div className="latency-item">
-                  <label>OrderSend</label>
-                  <div className="latency-values">
-                    <span className="current">{latencyData.broker1.orderSend.current}ms</span>
-                    <span className="average">avg: {latencyData.broker1.orderSend.average}ms</span>
-                  </div>
-                </div>
-                <div className="latency-item">
-                  <label>Quote Ping</label>
-                  <div className="latency-values">
-                    <span className="current">{latencyData.broker1.quotePing.current}ms</span>
-                    <span className="average">avg: {latencyData.broker1.quotePing.average}ms</span>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* Broker 2 Latency */}
-            <div className="latency-broker">
-              <h3>{broker2Label}</h3>
-              <div className="latency-metrics">
-                <div className="latency-item">
-                  <label>OrderSend</label>
-                  <div className="latency-values">
-                    <span className="current">{latencyData.broker2.orderSend.current}ms</span>
-                    <span className="average">avg: {latencyData.broker2.orderSend.average}ms</span>
-                  </div>
-                </div>
-                <div className="latency-item">
-                  <label>Quote Ping</label>
-                  <div className="latency-values">
-                    <span className="current">{latencyData.broker2.quotePing.current}ms</span>
-                    <span className="average">avg: {latencyData.broker2.quotePing.average}ms</span>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-          
-          <div className="latency-note">
-            <p>Current & 15-minute average latency. Lower is better for execution speed.</p>
-          </div>
-        </div>
       </div>
 
       {loading && (
@@ -771,6 +786,80 @@ setLoading(false);
           <div className="error-text">{error}</div>
         </div>
       )}
+
+      {/* Latency Monitoring Panel */}
+      <div className="trading-panel latency-panel" style={{ marginTop: '20px' }}>
+        <div className="panel-header">
+          <h2>Latency Monitoring</h2>
+        </div>
+        <div className="latency-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px' }}>
+          {/* Broker 1 Latency */}
+          <div className="latency-broker" style={{ padding: '15px', border: '1px solid #ddd', borderRadius: '8px', backgroundColor: '#f9f9f9' }}>
+            <h3 style={{ margin: '0 0 10px 0', color: '#2c3e50', fontWeight: 'bold', backgroundColor: '#fff', padding: '8px', borderRadius: '4px', border: '1px solid #ddd' }}>{broker1Label}</h3>
+            <div className="latency-metrics">
+              <div className="latency-item" style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
+                <label style={{ fontSize: '13px', color: '#555' }}>Last Order:</label>
+                <span className="latency-value" style={{ fontWeight: 'bold', color: latencyData.broker1.lastOrderLatency ? (latencyData.broker1.lastOrderLatency > 1000 ? 'red' : 'green') : '#999' }}>
+                  {latencyData.broker1.lastOrderLatency ? `${latencyData.broker1.lastOrderLatency}ms` : 'N/A'}
+                </span>
+              </div>
+              <div className="latency-item" style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
+                <label style={{ fontSize: '13px', color: '#555' }}>Order Latency Avg(Day):</label>
+                <span className="latency-value" style={{ fontWeight: 'bold', color: latencyData.broker1.avgOrderLatency ? (latencyData.broker1.avgOrderLatency > 1000 ? 'red' : 'green') : '#999' }}>
+                  {latencyData.broker1.avgOrderLatency ? `${latencyData.broker1.avgOrderLatency}ms` : 'N/A'}
+                </span>
+              </div>
+              <div className="latency-item" style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
+                <label style={{ fontSize: '13px', color: '#555' }}>Quote Ping:</label>
+                <span className="latency-value" style={{ fontWeight: 'bold', color: latencyData.broker1.lastQuoteLatency ? (latencyData.broker1.lastQuoteLatency > 500 ? 'red' : 'green') : '#999' }}>
+                  {latencyData.broker1.lastQuoteLatency ? `${latencyData.broker1.lastQuoteLatency}ms` : 'N/A'}
+                </span>
+              </div>
+              <div className="latency-item" style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
+                <label style={{ fontSize: '13px', color: '#555' }}>Quote Latency Avg(Day):</label>
+                <span className="latency-value" style={{ fontWeight: 'bold', color: latencyData.broker1.avgQuoteLatency ? (latencyData.broker1.avgQuoteLatency > 500 ? 'red' : 'green') : '#999' }}>
+                  {latencyData.broker1.avgQuoteLatency ? `${latencyData.broker1.avgQuoteLatency}ms` : 'N/A'}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* Broker 2 Latency */}
+          <div className="latency-broker" style={{ padding: '15px', border: '1px solid #ddd', borderRadius: '8px', backgroundColor: '#f9f9f9' }}>
+            <h3 style={{ margin: '0 0 10px 0', color: '#2c3e50', fontWeight: 'bold', backgroundColor: '#fff', padding: '8px', borderRadius: '4px', border: '1px solid #ddd' }}>{broker2Label}</h3>
+            <div className="latency-metrics">
+              <div className="latency-item" style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
+                <label style={{ fontSize: '13px', color: '#555' }}>Last Order:</label>
+                <span className="latency-value" style={{ fontWeight: 'bold', color: latencyData.broker2.lastOrderLatency ? (latencyData.broker2.lastOrderLatency > 1000 ? 'red' : 'green') : '#999' }}>
+                  {latencyData.broker2.lastOrderLatency ? `${latencyData.broker2.lastOrderLatency}ms` : 'N/A'}
+                </span>
+              </div>
+              <div className="latency-item" style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
+                <label style={{ fontSize: '13px', color: '#555' }}>Order Latency Avg(Day):</label>
+                <span className="latency-value" style={{ fontWeight: 'bold', color: latencyData.broker2.avgOrderLatency ? (latencyData.broker2.avgOrderLatency > 1000 ? 'red' : 'green') : '#999' }}>
+                  {latencyData.broker2.avgOrderLatency ? `${latencyData.broker2.avgOrderLatency}ms` : 'N/A'}
+                </span>
+              </div>
+              <div className="latency-item" style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
+                <label style={{ fontSize: '13px', color: '#555' }}>Quote Ping:</label>
+                <span className="latency-value" style={{ fontWeight: 'bold', color: latencyData.broker2.lastQuoteLatency ? (latencyData.broker2.lastQuoteLatency > 500 ? 'red' : 'green') : '#999' }}>
+                  {latencyData.broker2.lastQuoteLatency ? `${latencyData.broker2.lastQuoteLatency}ms` : 'N/A'}
+                </span>
+              </div>
+              <div className="latency-item" style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
+                <label style={{ fontSize: '13px', color: '#555' }}>Quote Latency Avg(Day):</label>
+                <span className="latency-value" style={{ fontWeight: 'bold', color: latencyData.broker2.avgQuoteLatency ? (latencyData.broker2.avgQuoteLatency > 500 ? 'red' : 'green') : '#999' }}>
+                  {latencyData.broker2.avgQuoteLatency ? `${latencyData.broker2.avgQuoteLatency}ms` : 'N/A'}
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div style={{ textAlign: 'center', marginTop: '10px', fontSize: '12px', color: '#666' }}>
+          Latency updates every 30 seconds. Lower is better for execution speed.
+        </div>
+      </div>
+      
     </div>
   );
 }

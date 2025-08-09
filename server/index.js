@@ -186,7 +186,11 @@ async function checkApiHealth(client) {
   try {
     // Primary: Try ConnectEx first
     await client.get('/ConnectEx', {
-      params: { user: '0', password: '0', server: 'test' },
+      params: { 
+        user: process.env.MT4_TEST_USER || 'test_user', 
+        password: process.env.MT4_TEST_PASSWORD || 'test_pass', 
+        server: process.env.MT4_TEST_SERVER || 'test_server' 
+      },
       timeout: 5000
     });
     return true;
@@ -194,7 +198,11 @@ async function checkApiHealth(client) {
     // Fallback: Try original Connect endpoint
     try {
       await client.get('/Connect', {
-        params: { user: '0', password: '0', host: 'test' },
+        params: { 
+          user: process.env.MT4_TEST_USER || 'test_user', 
+          password: process.env.MT4_TEST_PASSWORD || 'test_pass', 
+          host: process.env.MT4_TEST_SERVER || 'test_server' 
+        },
         timeout: 5000
       });
       return true;
@@ -219,8 +227,8 @@ app.get('/api/trading/latency/:brokerId', async (req, res) => {
   try {
     const { brokerId } = req.params;
     
-    const orderSendStats = latencyMonitor.getLatencyStats(brokerId, 'orderSend');
-    const quotePingStats = latencyMonitor.getLatencyStats(brokerId, 'quotePing');
+    const orderSendStats = await latencyMonitor.getLatencyStats(brokerId, 'orderSend');
+    const quotePingStats = await latencyMonitor.getLatencyStats(brokerId, 'quotePing');
     
     res.json({
       success: true,

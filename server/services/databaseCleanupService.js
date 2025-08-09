@@ -1,4 +1,4 @@
-const { ActiveTrade, ClosedTrade } = require('../models');
+const { ActiveTrade, ClosedTrade, sequelize } = require('../models');
 const logger = require('../utils/logger');
 
 class DatabaseCleanupService {
@@ -43,10 +43,23 @@ class DatabaseCleanupService {
     try {
       logger.info('Performing database cleanup...');
 
-      // Find trades in active_trades table that have been marked as closed
+      // Find trades that should be cleaned up:
+      // 1. Trades marked as 'Closed' 
+      // 2. Trades older than 24 hours (might be stale)
+      const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+      
       const staleTrades = await ActiveTrade.findAll({
         where: { 
-          status: 'Closed'
+          [sequelize.Op.or]: [
+            { status: 'Closed' },
+            { status: 'Error' },
+            { 
+              [sequelize.Op.and]: [
+                { createdAt: { [sequelize.Op.lt]: oneDayAgo } },
+                { status: 'Active' }
+              ]
+            }
+          ]
         }
       });
 
@@ -102,17 +115,24 @@ class DatabaseCleanupService {
               comment: trade.comment,
               scalpingMode: trade.scalpingMode,
               
-              // Close details
-              closeReason: 'Cleanup - Auto closed',
+              // Close details - determine reason based on status
+              closeReason: trade.status === 'Closed' ? 'Cleanup - Already closed' : 
+                          trade.status === 'Error' ? 'Cleanup - Error status' : 
+                          'Cleanup - Stale trade (24h+)',
               totalProfit: 0 // Will be calculated separately if needed
             });
+
+            logger.info(`Created closed trade record for trade: ${trade.tradeId}`);
+          } else {
+            logger.info(`Trade ${trade.tradeId} already exists in closed_trades, skipping creation`);
           }
 
-          // Remove from active trades
+          // Remove from active trades regardless of whether we created closed record
           await trade.destroy();
           cleanedCount++;
           
           logger.info(`Cleaned up stale trade: ${trade.tradeId}`);
+          
         } catch (error) {
           logger.error(`Failed to clean up trade ${trade.tradeId}:`, error);
         }
@@ -121,14 +141,57 @@ class DatabaseCleanupService {
       if (cleanedCount > 0) {
         logger.info(`Database cleanup completed: ${cleanedCount} stale trades cleaned`);
       }
+      
     } catch (error) {
       logger.error('Error in database cleanup:', error);
+    }
+  }
+
+  // Enhanced cleanup that also checks for duplicates
+  async performAdvancedCleanup() {
+    try {
+      logger.info('Performing advanced database cleanup...');
+
+      // Also remove duplicate closed trades
+      const duplicateClosed = await ClosedTrade.findAll({
+        attributes: ['tradeId'],
+        group: ['tradeId'],
+        having: sequelize.fn('COUNT', sequelize.col('tradeId')) > 1
+      });
+
+      if (duplicateClosed.length > 0) {
+        logger.info(`Found ${duplicateClosed.length} duplicate closed trades`);
+        
+        for (const duplicate of duplicateClosed) {
+          const trades = await ClosedTrade.findAll({
+            where: { tradeId: duplicate.tradeId },
+            order: [['createdAt', 'DESC']]
+          });
+          
+          // Keep the first (most recent), remove others
+          for (let i = 1; i < trades.length; i++) {
+            await trades[i].destroy();
+            logger.info(`Removed duplicate closed trade: ${trades[i].id}`);
+          }
+        }
+      }
+
+      // Perform regular cleanup
+      await this.performCleanup();
+      
+    } catch (error) {
+      logger.error('Error in advanced cleanup:', error);
     }
   }
 
   // Manual cleanup trigger
   async triggerCleanup() {
     await this.performCleanup();
+  }
+
+  // Manual advanced cleanup trigger
+  async triggerAdvancedCleanup() {
+    await this.performAdvancedCleanup();
   }
 }
 

@@ -703,19 +703,46 @@ router.post('/execute-current', async (req, res) => {
       });
     }
 
-    // Execute trade
-    const result = await tradingService.executeAtCurrentPremium({
+    console.log('📈 Starting trade execution at current premium:', {
       accountSetId,
       userId: req.user.id,
       direction,
       volume: volumeNum,
-      takeProfit: takeProfit ? parseFloat(takeProfit) : null,
-      stopLoss: stopLoss ? parseFloat(stopLoss) : null,
-      scalpingMode: scalpingMode || false,
-      comment: comment || 'FluxNetwork Trade'
+      takeProfit,
+      stopLoss,
+      scalpingMode,
+      comment
     });
+    
+    // Execute trade with timeout
+    const result = await Promise.race([
+      tradingService.executeAtCurrentPremium({
+        accountSetId,
+        userId: req.user.id,
+        direction,
+        volume: volumeNum,
+        takeProfit: takeProfit ? parseFloat(takeProfit) : null,
+        stopLoss: stopLoss ? parseFloat(stopLoss) : null,
+        scalpingMode: scalpingMode || false,
+        comment: comment || 'FluxNetwork Trade'
+      }),
+      new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('Trade execution timeout after 60 seconds')), 60000)
+      )
+    ]);
+    
+    console.log('✅ Trade execution result:', result);
 
     if (result.success) {
+      console.log('✅ Trade execution completed successfully:', {
+        tradeId: result.trade.tradeId,
+        broker1Ticket: result.trade.broker1Ticket,
+        broker2Ticket: result.trade.broker2Ticket,
+        accountSetId: result.trade.accountSetId,
+        userId: result.trade.userId,
+        status: result.trade.status
+      });
+      
       return res.json({
         success: true,
         trade: result.trade,
@@ -730,9 +757,13 @@ router.post('/execute-current', async (req, res) => {
     }
 
   } catch (error) {
+    console.error('❌ Execute-current failed:', error.message);
+    console.error('Error stack:', error.stack);
+    
     return res.status(500).json({
       success: false,
-      message: error.message
+      message: error.message,
+      details: process.env.NODE_ENV === 'development' ? error.stack : undefined
     });
   }
 });
@@ -882,7 +913,7 @@ router.get('/last-order-latency/:accountSetId', async (req, res) => {
 // ─── POST /api/trading/test-order-latency - Test OrderSend latency without executing ─────────
 router.post('/test-order-latency', async (req, res) => {
   try {
-    const { brokerId, terminal, symbol = 'EURUSD' } = req.body;
+    const { brokerId, terminal, symbol } = req.body;
     
     if (!brokerId || !terminal) {
       return res.status(400).json({
@@ -1198,5 +1229,251 @@ router.post('/cleanup-database', async (req, res) => {
     });
   }
 });
+
+// ─── GET /api/trading/symbols-cache-status - Get symbols cache status ─────────
+router.get('/symbols-cache-status', async (req, res) => {
+  try {
+    const stats = await brokerSymbolsCache.getCacheStats();
+    
+    res.json({
+      success: true,
+      cacheStats: stats,
+      message: `Found ${stats.totalCachedBrokers} cached brokers with ${stats.inMemoryCache} in-memory entries`
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+});
+
+// ─── POST /api/trading/populate-symbols-cache - Force populate symbols cache ─────────
+router.post('/populate-symbols-cache', async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const isAdmin = req.user.role === 'admin';
+    
+    // Get all account sets for the user
+    let whereClause = {};
+    if (!isAdmin) {
+      whereClause.userId = userId;
+    }
+    
+    const accountSets = await AccountSet.findAll({
+      where: whereClause,
+      include: [{
+        model: Broker,
+        as: 'brokers'
+      }]
+    });
+    
+    const results = [];
+    
+    for (const accountSet of accountSets) {
+      for (const broker of accountSet.brokers) {
+        try {
+          const token = await getValidToken(broker, broker.terminal === 'MT5');
+          const symbols = await brokerSymbolsCache.getSymbolsForBroker(
+            broker.brokerName,
+            broker.server,
+            broker.terminal,
+            token
+          );
+          
+          results.push({
+            accountSetName: accountSet.name,
+            brokerId: broker.id,
+            brokerName: broker.brokerName,
+            terminal: broker.terminal,
+            server: broker.server,
+            symbolsCount: Array.isArray(symbols) ? symbols.length : Object.keys(symbols || {}).length,
+            cached: true
+          });
+        } catch (error) {
+          results.push({
+            accountSetName: accountSet.name,
+            brokerId: broker.id,
+            brokerName: broker.brokerName,
+            terminal: broker.terminal,
+            server: broker.server,
+            error: error.message,
+            cached: false
+          });
+        }
+      }
+    }
+    
+    res.json({
+      success: true,
+      results,
+      message: `Processed ${results.length} brokers`
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+});
+
+// ─── GET /api/trading/debug-active-trades - Debug active trades in database ─────────
+router.get('/debug-active-trades', async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { accountSetId } = req.query;
+    
+    // Get ALL active trades regardless of status for debugging
+    let whereClause = { userId };
+    if (accountSetId) {
+      whereClause.accountSetId = accountSetId;
+    }
+
+    const allActiveTrades = await ActiveTrade.findAll({
+      where: whereClause,
+      include: [
+        { 
+          model: AccountSet, 
+          attributes: ['id', 'name', 'futureSymbol', 'spotSymbol']
+        },
+        {
+          model: Broker,
+          as: 'broker1',
+          attributes: ['id', 'terminal', 'server', 'brokerName']
+        },
+        {
+          model: Broker,
+          as: 'broker2',
+          attributes: ['id', 'terminal', 'server', 'brokerName']
+        }
+      ],
+      order: [['createdAt', 'DESC']]
+    });
+
+    // Also get counts by status
+    const statusCounts = await ActiveTrade.findAll({
+      attributes: [
+        'status',
+        [sequelize.fn('COUNT', sequelize.col('status')), 'count']
+      ],
+      where: { userId },
+      group: ['status'],
+      raw: true
+    });
+
+    res.json({
+      success: true,
+      debug: {
+        totalTradesInActiveTable: allActiveTrades.length,
+        statusBreakdown: statusCounts,
+        allTrades: allActiveTrades
+      }
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+});
+
+// ─── POST /api/trading/force-cleanup - Force cleanup of specific trade ─────────
+router.post('/force-cleanup', async (req, res) => {
+  try {
+    const { tradeId } = req.body;
+    const userId = req.user.id;
+
+    if (!tradeId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Trade ID is required'
+      });
+    }
+
+    const trade = await ActiveTrade.findOne({
+      where: { tradeId, userId }
+    });
+
+    if (!trade) {
+      return res.status(404).json({
+        success: false,
+        message: 'Trade not found in active trades'
+      });
+    }
+
+    const transaction = await ActiveTrade.sequelize.transaction();
+    
+    try {
+      // Check if already exists in closed trades
+      const existingClosed = await ClosedTrade.findOne({
+        where: { tradeId }
+      });
+
+      if (!existingClosed) {
+        // Create closed trade record
+        await ClosedTrade.create({
+          tradeId: trade.tradeId,
+          accountSetId: trade.accountSetId,
+          userId: trade.userId,
+          
+          // Broker 1 details
+          broker1Id: trade.broker1Id,
+          broker1Ticket: trade.broker1Ticket,
+          broker1Symbol: trade.broker1Symbol,
+          broker1Direction: trade.broker1Direction,
+          broker1Volume: trade.broker1Volume,
+          broker1OpenPrice: trade.broker1OpenPrice,
+          broker1OpenTime: trade.broker1OpenTime,
+          broker1CloseTime: new Date(),
+          
+          // Broker 2 details
+          broker2Id: trade.broker2Id,
+          broker2Ticket: trade.broker2Ticket,
+          broker2Symbol: trade.broker2Symbol,
+          broker2Direction: trade.broker2Direction,
+          broker2Volume: trade.broker2Volume,
+          broker2OpenPrice: trade.broker2OpenPrice,
+          broker2OpenTime: trade.broker2OpenTime,
+          broker2CloseTime: new Date(),
+          
+          // Trade details
+          executionPremium: trade.executionPremium,
+          closePremium: trade.executionPremium,
+          takeProfit: trade.takeProfit,
+          stopLoss: trade.stopLoss,
+          broker1Latency: trade.broker1Latency,
+          broker2Latency: trade.broker2Latency,
+          comment: trade.comment,
+          scalpingMode: trade.scalpingMode,
+          
+          // Close details
+          closeReason: 'Manual force cleanup',
+          totalProfit: 0
+        }, { transaction });
+      }
+
+      // Remove from active trades
+      await trade.destroy({ transaction });
+      
+      await transaction.commit();
+
+      res.json({
+        success: true,
+        message: `Trade ${tradeId} has been moved to closed trades`
+      });
+
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+});
+
 
 module.exports = router;

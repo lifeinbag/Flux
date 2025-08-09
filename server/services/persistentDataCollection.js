@@ -111,7 +111,8 @@ class PersistentDataCollectionService {
   async collectAndStorePremiumData(config) {
     const {
       company1, company2, futureSymbol, spotSymbol,
-      premiumTableName, accountSetId
+      premiumTableName, accountSetId, broker1Token, broker2Token,
+      broker1Terminal, broker2Terminal
     } = config;
 
     try {
@@ -143,9 +144,9 @@ class PersistentDataCollectionService {
         }
       );
 
-      // Store bid/ask data
-      await this.storeBidAskData(company1, futureSymbol, futureQuote);
-      await this.storeBidAskData(company2, spotSymbol, spotQuote);
+      // Store bid/ask data with trade session check
+      await this.storeBidAskData(company1, futureSymbol, futureQuote, futureQuote.token, futureQuote.terminal);
+      await this.storeBidAskData(company2, spotSymbol, spotQuote, spotQuote.token, spotQuote.terminal);
 
       // Update collection status
       const key = `${company1}_${company2}_${futureSymbol}_${spotSymbol}_${accountSetId}`;
@@ -179,7 +180,15 @@ class PersistentDataCollectionService {
       }
 
       const token = await this.getValidToken(broker);
-      return await this.fetchQuote(token, symbol, broker.terminal);
+      const quote = await this.fetchQuote(token, symbol, broker.terminal);
+      
+      // Add token and terminal to quote for trade session check
+      if (quote) {
+        quote.token = token;
+        quote.terminal = broker.terminal;
+      }
+      
+      return quote;
 
     } catch (error) {
       if (retryCount === 0) {
@@ -273,8 +282,36 @@ class PersistentDataCollectionService {
     return null;
   }
 
-  async storeBidAskData(companyName, symbol, quote) {
+  async checkIsTradeSession(token, symbol, terminal) {
     try {
+      const client = terminal === 'MT5' ? mt5Client : mt4Client;
+      
+      const response = await client.get('/IsTradeSession', {
+        params: { id: token, symbol }
+      });
+      
+      const isTradeSession = response.data === true || response.data === 'true';
+      
+      if (!isTradeSession) {
+        logger.info(`🚫 Symbol ${symbol} is NOT in trade session - skipping bid/ask storage`);
+      }
+      
+      return isTradeSession;
+    } catch (error) {
+      logger.error(`❌ Error checking trade session for ${symbol} on ${terminal}:`, error.message);
+      return false;
+    }
+  }
+
+  async storeBidAskData(companyName, symbol, quote, token, terminal) {
+    try {
+      // Check if symbol is in trade session before storing
+      const isInTradeSession = await this.checkIsTradeSession(token, symbol, terminal);
+      
+      if (!isInTradeSession) {
+        return; // Skip storage - already logged in checkIsTradeSession
+      }
+
       const tableName = `bid_ask_${companyName}`;
 
       await sequelize.query(
@@ -288,8 +325,9 @@ class PersistentDataCollectionService {
           }
         }
       );
+      
     } catch (error) {
-      // Silent fail for bid/ask storage errors
+      logger.error(`❌ Error storing bid/ask data for ${symbol}:`, error.message);
     }
   }
 
