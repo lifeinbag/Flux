@@ -14,7 +14,17 @@
       "Bash(powershell:*)",
       "Bash(npm test)",
       "Bash(timeout:*)",
-      "Bash(wmic process where processid=11712 delete:*)"
+      "Bash(wmic process where processid=11712 delete:*)",
+      "Bash(wmic process where processid=15856 delete:*)",
+      "Bash(wmic process where processid=15180 delete:*)",
+      "Bash(wmic process where processid=12512 delete:*)",
+      "Bash(wmic process where processid=12364 delete:*)",
+      "Bash(wmic process where name=\"node.exe\":*)",
+      "Bash(wmic process where:*)",
+      "Bash(git restore:*)",
+      "Bash(npx eslint:*)",
+      "WebFetch(domain:mt4.premiumprofit.live)",
+      "WebFetch(domain:mt5.premiumprofit.live)"
     ],
     "deny": []
   }

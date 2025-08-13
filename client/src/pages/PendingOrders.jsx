@@ -1,267 +1,316 @@
-// src/pages/PendingOrders.jsx
-
 import React, { useState, useEffect } from 'react';
 import API from '../services/api';
-import './ActiveTrades.css'; // Reuse the same CSS
 
 export default function PendingOrders() {
   const [accountSets, setAccountSets] = useState([]);
   const [selectedSetId, setSelectedSetId] = useState('');
   const [pendingOrders, setPendingOrders] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [ordersLoading, setOrdersLoading] = useState(false);
-
-  // Fetch pending orders for selected account set
-  const fetchPendingOrders = async (accountSetId) => {
-    if (!accountSetId) return;
-    
-    setOrdersLoading(true);
-    try {
-      const params = accountSetId ? { accountSetId } : {};
-      const res = await API.get('/trading/pending-orders', { params });
-      const orders = res.data.orders || [];
-      setPendingOrders(orders);
-    } catch (error) {
-      console.error('Error fetching pending orders:', error);
-      setPendingOrders([]);
-    }
-    setOrdersLoading(false);
-  };
 
   useEffect(() => {
-    API.get('/account-sets')
-      .then(res => {
-        const accountSetsData = res.data.data || res.data;
-        if (Array.isArray(accountSetsData)) {
-          setAccountSets(accountSetsData);
-          if (accountSetsData.length > 0) {
-            const firstSetId = accountSetsData[0]._id || accountSetsData[0].id;
-            setSelectedSetId(firstSetId);
-            fetchPendingOrders(firstSetId);
-          }
-        }
-        setLoading(false);
-      })
-      .catch(() => {
-        setAccountSets([]);
-        setLoading(false);
-      });
+    loadAccountSets();
   }, []);
 
-  // Fetch pending orders when account set changes
   useEffect(() => {
     if (selectedSetId) {
-      fetchPendingOrders(selectedSetId);
+      loadPendingOrders();
     }
   }, [selectedSetId]);
 
-  // Handle cancel order
-  const handleCancelOrder = async (orderId) => {
-    if (!window.confirm('Are you sure you want to cancel this pending order?')) return;
-    
+  const loadAccountSets = async () => {
     try {
-      await API.post('/trading/cancel-pending', { orderId });
-      // Refresh orders after canceling
-      fetchPendingOrders(selectedSetId);
-      alert('Pending order cancelled successfully');
-    } catch (error) {
-      console.error('Error canceling order:', error);
-      alert('Failed to cancel order: ' + (error.response?.data?.message || error.message));
+      const res = await API.get('/account-sets');
+      const accountSetsData = res.data.data || res.data;
+      if (Array.isArray(accountSetsData)) {
+        setAccountSets(accountSetsData);
+        if (accountSetsData.length > 0) {
+          setSelectedSetId(accountSetsData[0]._id || accountSetsData[0].id);
+        }
+      }
+    } catch (err) {
+      console.error('Failed to load account sets:', err);
     }
   };
 
-  if (loading) return <p>Loading...</p>;
+  const loadPendingOrders = async () => {
+    try {
+      setLoading(true);
+      const res = await API.get(`/trading/pending-orders?accountSetId=${selectedSetId}`);
+      if (res.data.success) {
+        setPendingOrders(res.data.orders);
+      }
+    } catch (err) {
+      console.error('Failed to load pending orders:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const cancelPendingOrder = async (orderId) => {
+    try {
+      const res = await API.post('/trading/cancel-pending', { orderId });
+      
+      if (res.data.success) {
+        loadPendingOrders();
+        alert('Pending order cancelled successfully');
+      }
+    } catch (err) {
+      console.error('Failed to cancel pending order:', err);
+      alert('Failed to cancel pending order: ' + err.message);
+    }
+  };
+
+  const formatDate = (dateString) => {
+    if (!dateString) return 'N/A';
+    const date = new Date(dateString);
+    return date.toLocaleDateString() + ' ' + date.toLocaleTimeString();
+  };
+
+  const selectedAccountSet = accountSets.find(s => (s._id || s.id) === selectedSetId);
 
   return (
-    <div className="active-trades-page">
-      <div className="page-header">
-        <h1>Pending Orders</h1>
-        <p>Monitor your pending orders waiting for target premium</p>
-      </div>
+    <div style={{ 
+      background: 'linear-gradient(135deg, #1e3c72, #2a5298)', 
+      minHeight: '100vh', 
+      padding: '2rem',
+      color: 'white',
+      fontFamily: 'Arial, sans-serif'
+    }}>
+      <div style={{ maxWidth: '1400px', margin: '0 auto' }}>
+        <h1 style={{ 
+          fontSize: '2.5rem', 
+          marginBottom: '0.5rem',
+          color: '#4fc3f7'
+        }}>
+          Pending Orders
+        </h1>
+        <p style={{ 
+          color: '#b0bec5', 
+          marginBottom: '2rem',
+          fontSize: '1.1rem'
+        }}>
+          Monitor your pending orders waiting for target premium
+        </p>
 
-      {/* Account Set Filter */}
-      {accountSets.length > 0 && (
-        <div className="account-filter">
-          <label>
-            <strong>Account Set:</strong>
+        {/* Account Set Selector */}
+        <div style={{
+          background: 'rgba(255,255,255,0.1)',
+          padding: '1.5rem',
+          borderRadius: '12px',
+          marginBottom: '2rem',
+          border: '1px solid rgba(255,255,255,0.2)'
+        }}>
+          <label style={{ 
+            display: 'flex', 
+            alignItems: 'center', 
+            gap: '12px',
+            fontSize: '1.1rem',
+            fontWeight: 'bold'
+          }}>
+            Account Set:
             <select
               value={selectedSetId}
               onChange={e => setSelectedSetId(e.target.value)}
-              className="account-select"
+              style={{
+                padding: '12px 16px',
+                borderRadius: '8px',
+                border: 'none',
+                minWidth: '300px',
+                fontSize: '1rem',
+                background: 'white',
+                color: '#333'
+              }}
             >
               {accountSets.map(set => (
-                <option key={set._id} value={set._id}>
+                <option key={set._id || set.id} value={set._id || set.id}>
                   {set.name}
                 </option>
               ))}
             </select>
           </label>
-        </div>
-      )}
-
-      {/* Pending Orders Table */}
-      <div className="trades-container" style={{ marginTop: '20px' }}>
-        <div className="table-header" style={{ 
-          background: 'linear-gradient(135deg, #fd7e14 0%, #e83e8c 100%)', 
-          color: 'white', 
-          padding: '15px 20px', 
-          borderRadius: '10px 10px 0 0',
-          marginBottom: '0'
-        }}>
-          <h3 style={{ margin: 0, fontSize: '18px' }}>Pending Orders Queue</h3>
-          <span style={{ fontSize: '14px', opacity: 0.9 }}>Total: {pendingOrders.length} orders</span>
-        </div>
-        
-        <div style={{ overflowX: 'auto', boxShadow: '0 4px 6px rgba(0,0,0,0.1)', borderRadius: '0 0 10px 10px' }}>
-          <table style={{ 
-            width: '100%', 
-            borderCollapse: 'collapse', 
-            fontSize: '13px',
-            backgroundColor: 'white'
-          }}>
-          <thead>
-            <tr style={{ backgroundColor: '#f8f9fa', borderBottom: '2px solid #dee2e6' }}>
-              <th style={{ padding: '12px 8px', textAlign: 'left', fontWeight: '600', color: '#495057', borderRight: '1px solid #dee2e6' }}>Order ID</th>
-              <th style={{ padding: '12px 8px', textAlign: 'left', fontWeight: '600', color: '#495057', borderRight: '1px solid #dee2e6' }}>Direction</th>
-              <th style={{ padding: '12px 8px', textAlign: 'left', fontWeight: '600', color: '#495057', borderRight: '1px solid #dee2e6' }}>Volume</th>
-              <th style={{ padding: '12px 8px', textAlign: 'left', fontWeight: '600', color: '#495057', borderRight: '1px solid #dee2e6' }}>Future Symbol</th>
-              <th style={{ padding: '12px 8px', textAlign: 'left', fontWeight: '600', color: '#495057', borderRight: '1px solid #dee2e6' }}>Spot Symbol</th>
-              <th style={{ padding: '12px 8px', textAlign: 'left', fontWeight: '600', color: '#495057', borderRight: '1px solid #dee2e6' }}>Target Premium</th>
-              <th style={{ padding: '12px 8px', textAlign: 'left', fontWeight: '600', color: '#495057', borderRight: '1px solid #dee2e6' }}>Take Profit</th>
-              <th style={{ padding: '12px 8px', textAlign: 'left', fontWeight: '600', color: '#495057', borderRight: '1px solid #dee2e6' }}>Stop Loss</th>
-              <th style={{ padding: '12px 8px', textAlign: 'left', fontWeight: '600', color: '#495057', borderRight: '1px solid #dee2e6' }}>Status</th>
-              <th style={{ padding: '12px 8px', textAlign: 'left', fontWeight: '600', color: '#495057', borderRight: '1px solid #dee2e6' }}>Created At</th>
-              <th style={{ padding: '12px 8px', textAlign: 'left', fontWeight: '600', color: '#495057' }}>Action</th>
-            </tr>
-          </thead>
-          <tbody>
-            {ordersLoading ? (
-              <tr>
-                <td colSpan="11" style={{ textAlign: 'center', padding: '40px', color: '#6c757d' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '10px' }}>
-                    <div style={{ width: '20px', height: '20px', border: '3px solid #f3f3f3', borderTop: '3px solid #fd7e14', borderRadius: '50%', animation: 'spin 1s linear infinite' }}></div>
-                    Loading pending orders...
-                  </div>
-                </td>
-              </tr>
-            ) : pendingOrders.length === 0 ? (
-              <tr>
-                <td colSpan="11" style={{ textAlign: 'center', padding: '40px', color: '#6c757d' }}>
-                  <div style={{ fontSize: '16px' }}>⏳ No pending orders found</div>
-                  <div style={{ fontSize: '12px', marginTop: '5px' }}>Pending orders waiting for target premium will appear here</div>
-                </td>
-              </tr>
-            ) : (
-              pendingOrders.map((order, index) => (
-                <tr key={order.orderId} style={{ 
-                  backgroundColor: index % 2 === 0 ? '#ffffff' : '#f8f9fa',
-                  borderBottom: '1px solid #dee2e6',
-                  transition: 'background-color 0.2s'
-                }}
-                onMouseEnter={e => e.target.parentElement.style.backgroundColor = '#e3f2fd'}
-                onMouseLeave={e => e.target.parentElement.style.backgroundColor = index % 2 === 0 ? '#ffffff' : '#f8f9fa'}
-                >
-                  <td style={{ padding: '10px 8px', borderRight: '1px solid #dee2e6', fontFamily: 'monospace' }}>
-                    {order.orderId ? order.orderId.slice(-8) : 'N/A'}
-                  </td>
-                  <td style={{ padding: '10px 8px', borderRight: '1px solid #dee2e6' }}>
-                    <span style={{ 
-                      color: order.direction === 'Buy' ? '#28a745' : '#dc3545',
-                      fontWeight: '600',
-                      fontSize: '12px',
-                      padding: '2px 6px',
-                      borderRadius: '3px',
-                      backgroundColor: order.direction === 'Buy' ? '#d4edda' : '#f8d7da'
-                    }}>
-                      {order.direction}
-                    </span>
-                  </td>
-                  <td style={{ padding: '10px 8px', borderRight: '1px solid #dee2e6', textAlign: 'center' }}>
-                    {order.volume}
-                  </td>
-                  <td style={{ padding: '10px 8px', borderRight: '1px solid #dee2e6', fontFamily: 'monospace', fontSize: '12px' }}>
-                    {order.broker1Symbol}
-                  </td>
-                  <td style={{ padding: '10px 8px', borderRight: '1px solid #dee2e6', fontFamily: 'monospace', fontSize: '12px' }}>
-                    {order.broker2Symbol}
-                  </td>
-                  <td style={{ padding: '10px 8px', borderRight: '1px solid #dee2e6', textAlign: 'right', fontWeight: '600' }}>
-                    {parseFloat(order.targetPremium).toFixed(5)}
-                  </td>
-                  <td style={{ padding: '10px 8px', borderRight: '1px solid #dee2e6', textAlign: 'right' }}>
-                    {order.takeProfit ? parseFloat(order.takeProfit).toFixed(2) : <em style={{color: '#999'}}>None</em>}
-                  </td>
-                  <td style={{ padding: '10px 8px', borderRight: '1px solid #dee2e6', textAlign: 'right' }}>
-                    {order.stopLoss ? parseFloat(order.stopLoss).toFixed(2) : <em style={{color: '#999'}}>None</em>}
-                  </td>
-                  <td style={{ padding: '10px 8px', borderRight: '1px solid #dee2e6', textAlign: 'center' }}>
-                    <span style={{
-                      padding: '3px 8px',
-                      borderRadius: '12px',
-                      backgroundColor: order.status === 'Pending' ? '#fff3cd' : '#e9ecef',
-                      color: order.status === 'Pending' ? '#856404' : '#6c757d',
-                      fontSize: '11px',
-                      fontWeight: '600',
-                      border: `1px solid ${order.status === 'Pending' ? '#ffeeba' : '#dee2e6'}`
-                    }}>
-                      {order.status}
-                    </span>
-                  </td>
-                  <td style={{ padding: '10px 8px', borderRight: '1px solid #dee2e6', fontSize: '11px', color: '#6c757d' }}>
-                    <div>{new Date(order.createdAt).toLocaleDateString()}</div>
-                    <div>{new Date(order.createdAt).toLocaleTimeString()}</div>
-                  </td>
-                  <td style={{ padding: '10px 8px' }}>
-                    <button 
-                      style={{
-                        backgroundColor: '#dc3545',
-                        color: 'white',
-                        border: 'none',
-                        padding: '6px 12px',
-                        borderRadius: '4px',
-                        fontSize: '12px',
-                        cursor: 'pointer',
-                        fontWeight: '600'
-                      }}
-                      onClick={() => handleCancelOrder(order.orderId)}
-                      onMouseEnter={e => e.target.style.backgroundColor = '#c82333'}
-                      onMouseLeave={e => e.target.style.backgroundColor = '#dc3545'}
-                    >
-                      Cancel
-                    </button>
-                  </td>
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-
-        </div>
-        
-        <div style={{ 
-          background: 'linear-gradient(135deg, #6f42c1 0%, #6610f2 100%)', 
-          color: 'white', 
-          padding: '15px 20px', 
-          borderRadius: '0 0 10px 10px',
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center'
-        }}>
-          <div>
-            <strong style={{ fontSize: '18px' }}>Total Pending Orders: {pendingOrders.length}</strong>
-          </div>
-          <div style={{ display: 'flex', gap: '15px', fontSize: '14px', opacity: 0.9 }}>
-            <div>
-              Pending: {pendingOrders.filter(order => order.status === 'Pending').length}
+          {selectedAccountSet && (
+            <div style={{ 
+              marginTop: '12px', 
+              fontSize: '0.95rem', 
+              color: '#e3f2fd'
+            }}>
+              <span>
+                Broker 1: {selectedAccountSet.brokers[0]?.terminal} ({selectedAccountSet.brokers[0]?.accountNumber}-{selectedAccountSet.brokers[0]?.brokerName}) • 
+                Broker 2: {selectedAccountSet.brokers[1]?.terminal} ({selectedAccountSet.brokers[1]?.accountNumber}-{selectedAccountSet.brokers[1]?.brokerName})
+              </span>
             </div>
-            {pendingOrders.some(order => order.status !== 'Pending') && (
-              <div>
-                Other: {pendingOrders.filter(order => order.status !== 'Pending').length}
-              </div>
-            )}
-          </div>
+          )}
         </div>
+
+        {/* Pending Orders Queue */}
+        <div style={{
+          background: 'linear-gradient(135deg, #ff7043, #ff8a65)',
+          padding: '1.5rem',
+          borderRadius: '12px',
+          marginBottom: '1rem'
+        }}>
+          <h2 style={{ margin: '0 0 0.5rem 0', fontSize: '1.4rem' }}>
+            Pending Orders Queue
+          </h2>
+          <p style={{ margin: 0, fontSize: '1rem' }}>
+            Total: {pendingOrders.length} orders
+          </p>
+        </div>
+
+        {loading ? (
+          <div style={{ 
+            textAlign: 'center', 
+            padding: '3rem',
+            background: 'rgba(255,255,255,0.1)',
+            borderRadius: '12px'
+          }}>
+            <div style={{ marginBottom: '1rem' }}>⟳ Loading pending orders...</div>
+          </div>
+        ) : (
+          <>
+            {/* Data Table */}
+            <div style={{
+              background: 'rgba(255,255,255,0.95)',
+              borderRadius: '12px',
+              overflow: 'hidden',
+              boxShadow: '0 8px 32px rgba(0,0,0,0.3)'
+            }}>
+              <table style={{
+                width: '100%',
+                borderCollapse: 'collapse',
+                fontSize: '0.9rem'
+              }}>
+                <thead style={{
+                  background: 'rgba(0,0,0,0.4)',
+                  color: 'white'
+                }}>
+                  <tr>
+                    <th style={tableHeaderStyle}>Order ID</th>
+                    <th style={tableHeaderStyle}>Direction</th>
+                    <th style={tableHeaderStyle}>Volume</th>
+                    <th style={tableHeaderStyle}>Broker1 (MT5)</th>
+                    <th style={tableHeaderStyle}>Broker2 (MT4)</th>
+                    <th style={tableHeaderStyle}>Target Premium</th>
+                    <th style={tableHeaderStyle}>Take Profit</th>
+                    <th style={tableHeaderStyle}>Status</th>
+                    <th style={tableHeaderStyle}>Created At</th>
+                    <th style={tableHeaderStyle}>Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {pendingOrders.map((order, index) => (
+                    <tr key={order.orderId} style={{
+                      background: index % 2 === 0 ? 'white' : '#f8f9fa',
+                      color: '#333'
+                    }}>
+                      <td style={tableCellStyle}>{order.orderId}</td>
+                      <td style={tableCellStyle}>
+                        <span style={{
+                          background: order.direction === 'Buy' ? '#c8e6c9' : '#ffcdd2',
+                          color: order.direction === 'Buy' ? '#2e7d32' : '#c62828',
+                          padding: '4px 8px',
+                          borderRadius: '4px',
+                          fontSize: '0.8rem',
+                          fontWeight: 'bold'
+                        }}>
+                          {order.direction}
+                        </span>
+                      </td>
+                      <td style={tableCellStyle}>{order.volume}</td>
+                      <td style={tableCellStyle}>
+                        {order.broker1 ? `${order.broker1.terminal} (${order.broker1.brokerName})` : 'N/A'}
+                      </td>
+                      <td style={tableCellStyle}>
+                        {order.broker2 ? `${order.broker2.terminal} (${order.broker2.brokerName})` : 'N/A'}
+                      </td>
+                      <td style={{...tableCellStyle, fontWeight: 'bold', color: '#ff7043'}}>
+                        {parseFloat(order.targetPremium).toFixed(2)}
+                      </td>
+                      <td style={tableCellStyle}>
+                        {order.takeProfit ? parseFloat(order.takeProfit).toFixed(2) : 'N/A'}
+                      </td>
+                      <td style={tableCellStyle}>
+                        <span style={{
+                          background: order.status === 'Pending' ? '#fff3e0' : '#e8f5e8',
+                          color: order.status === 'Pending' ? '#f57c00' : '#2e7d32',
+                          padding: '4px 8px',
+                          borderRadius: '4px',
+                          fontSize: '0.8rem',
+                          fontWeight: 'bold'
+                        }}>
+                          {order.status}
+                        </span>
+                      </td>
+                      <td style={tableCellStyle}>
+                        {formatDate(order.createdAt)}
+                      </td>
+                      <td style={tableCellStyle}>
+                        {order.status === 'Pending' && (
+                          <button
+                            onClick={() => cancelPendingOrder(order.orderId)}
+                            style={{
+                              background: '#f44336',
+                              color: 'white',
+                              border: 'none',
+                              padding: '6px 12px',
+                              borderRadius: '4px',
+                              fontSize: '0.8rem',
+                              cursor: 'pointer',
+                              fontWeight: 'bold'
+                            }}
+                          >
+                            Cancel
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+
+              {pendingOrders.length === 0 && (
+                <div style={{
+                  textAlign: 'center',
+                  padding: '2rem',
+                  color: '#666'
+                }}>
+                  No pending orders found
+                </div>
+              )}
+            </div>
+
+            {/* Total Pending Orders */}
+            <div style={{
+              background: 'linear-gradient(135deg, #7b1fa2, #ab47bc)',
+              padding: '1rem 2rem',
+              borderRadius: '0 0 12px 12px',
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              fontSize: '1.2rem',
+              fontWeight: 'bold'
+            }}>
+              <span>Total Pending Orders: {pendingOrders.length}</span>
+              <span>Pending: {pendingOrders.filter(o => o.status === 'Pending').length}</span>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
 }
+
+const tableHeaderStyle = {
+  padding: '12px 8px',
+  textAlign: 'left',
+  fontWeight: 'bold',
+  fontSize: '0.85rem',
+  borderBottom: '2px solid rgba(255,255,255,0.3)',
+  color: 'white'
+};
+
+const tableCellStyle = {
+  padding: '12px 8px',
+  borderBottom: '1px solid #e0e0e0',
+  fontSize: '0.9rem'
+};

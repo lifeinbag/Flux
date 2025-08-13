@@ -10,7 +10,8 @@ export default function TradeExecution({
 }) {
   const [broker1Symbols, setBroker1Symbols] = useState([]);
   const [broker2Symbols, setBroker2Symbols] = useState([]);
-  const [loading, setLoading] = useState(false);
+  const [loadingSymbols, setLoadingSymbols] = useState(false);
+  const [executing, setExecuting] = useState(false);
   const [error, setError] = useState('');
   const [selectedBroker1, setSelectedBroker1] = useState('');
   const [selectedBroker2, setSelectedBroker2] = useState('');
@@ -229,8 +230,8 @@ export default function TradeExecution({
       return;
     }
 
-    // Set loading state immediately
-    setLoading(true);
+    // Set executing state immediately
+    setExecuting(true);
     
     try {
       console.log('🚀 Executing order:', {
@@ -304,8 +305,8 @@ export default function TradeExecution({
       setError(errorMessage);
       
     } finally {
-      // Always turn off loading, regardless of success or failure
-      setLoading(false);
+      // Always turn off executing, regardless of success or failure
+      setExecuting(false);
       
       // Refresh latency data after order execution
       try {
@@ -394,11 +395,11 @@ export default function TradeExecution({
     if (!accountSet || !brokers.length || brokers.length < 2) {
       setBroker1Symbols([]);
       setBroker2Symbols([]);
-      setLoading(false);
+      setLoadingSymbols(false);
       return;
     }
 
-    setLoading(true);
+    setLoadingSymbols(true);
     setError('');
     
     console.log('Loading symbols for:', { 
@@ -448,10 +449,10 @@ export default function TradeExecution({
 
         setBroker1Symbols(symbols1 || []);
         setBroker2Symbols(symbols2 || []);
-        setLoading(false);
+        setLoadingSymbols(false);
       } catch (err) {
         console.error('Symbol loading error:', err.message);
-        setLoading(false);
+        setLoadingSymbols(false);
       }
     };
     loadSymbols();
@@ -739,19 +740,19 @@ export default function TradeExecution({
             <button 
               className="action-btn current-premium"
               onClick={() => executeOrder('current')}
-              disabled={loading || !selectedBroker1 || !selectedBroker2 || !volume || !accountSet}
+              disabled={executing || loadingSymbols || !selectedBroker1 || !selectedBroker2 || !volume || !accountSet}
               title={!accountSet ? 'Please select an account set first' : (!selectedBroker1 || !selectedBroker2) ? 'Please select symbols for both brokers' : !volume ? 'Please enter volume' : 'Execute trade at current premium'}
             >
-              <div className="btn-content">{loading ? 'Executing...' : 'Execute at Current Premium'}</div>
+              <div className="btn-content">{executing ? 'Executing...' : 'Execute at Current Premium'}</div>
               <div className="btn-glow"></div>
             </button>
             <button 
               className="action-btn target-premium"
               onClick={() => executeOrder('target')}
-              disabled={loading || !selectedBroker1 || !selectedBroker2 || !volume || !targetPremium || !accountSet}
+              disabled={executing || loadingSymbols || !selectedBroker1 || !selectedBroker2 || !volume || !targetPremium || !accountSet}
               title={!accountSet ? 'Please select an account set first' : (!selectedBroker1 || !selectedBroker2) ? 'Please select symbols for both brokers' : !volume ? 'Please enter volume' : !targetPremium ? 'Please enter target premium' : 'Create pending order at target premium'}
             >
-              <div className="btn-content">{loading ? 'Creating Order...' : 'Execute at Target Premium'}</div>
+              <div className="btn-content">{executing ? 'Creating Order...' : 'Execute at Target Premium'}</div>
               <div className="btn-glow"></div>
             </button>
           </div>
@@ -773,7 +774,7 @@ export default function TradeExecution({
 
       </div>
 
-      {loading && (
+      {loadingSymbols && (
         <div className="loading-container">
           <div className="loading-spinner"></div>
           <div className="loading-text">Loading symbols...</div>

@@ -28,7 +28,9 @@ class MT4MT5Service {
         mt5Sample: data.mt5Data?.[0],
         mt4Sample: data.mt4Data?.[0],
         mt5AllTickets: data.mt5Data?.map(t => t.ticket) || [],
-        mt4AllTickets: data.mt4Data?.map(t => t.ticket) || []
+        mt4AllTickets: data.mt4Data?.map(t => t.ticket) || [],
+        rawMt4Data: data.mt4Data,
+        rawMt5Data: data.mt5Data
       });
       
       if (data.accountSetId) {
@@ -376,8 +378,13 @@ class MT4MT5Service {
     console.log('🔍 getMT4TradeData: Searching for ticket', ticket, 'in', cache.mt4Data.length, 'MT4 trades');
     console.log('🔍 Available MT4 tickets:', cache.mt4Data.map(t => t.ticket));
     
-    const trade = cache.mt4Data.find(trade => trade.ticket === parseInt(ticket));
-    console.log('🔍 getMT4TradeData result:', trade ? `Found trade ${trade.ticket}` : `No trade found for ticket ${ticket}`);
+    const trade = cache.mt4Data.find(trade => {
+      const tradeTicket = parseInt(trade.ticket);
+      const searchTicket = parseInt(ticket);
+      console.log('🔍 Comparing tickets:', { tradeTicket, searchTicket, match: tradeTicket === searchTicket });
+      return tradeTicket === searchTicket;
+    });
+    console.log('🔍 getMT4TradeData result:', trade ? `Found trade ${trade.ticket} with profit ${trade.profit}` : `No trade found for ticket ${ticket}`);
     
     return trade;
   }

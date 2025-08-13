@@ -539,6 +539,11 @@ wss.on('connection', (ws, req) => {
           await handleSubscribePositions(ws, msg);
           break;
 
+        case 'subscribe_open_orders':
+          console.log('🔔 Handling subscribe_open_orders');
+          await handleSubscribeOpenOrders(ws, msg);
+          break;
+
         case 'subscribe_trades':
           console.log('🔔 Handling subscribe_trades (not implemented)');
           break;
@@ -581,6 +586,10 @@ wss.on('connection', (ws, req) => {
     if (ws.positionsInterval) {
       clearInterval(ws.positionsInterval);
       console.log('🛑 Cleared positions interval');
+    }
+    if (ws.openOrdersInterval) {
+      clearInterval(ws.openOrdersInterval);
+      console.log('🛑 Cleared open orders interval');
     }
   });
 
@@ -882,14 +891,14 @@ async function handleSubscribePositions(ws, msg) {
       }));
     }
 
-    // Find MT4 and MT5 brokers
-    const mt5Broker = accountSet.brokers.find(b => b.terminal === 'MT5');
-    const mt4Broker = accountSet.brokers.find(b => b.terminal === 'MT4');
+    // Get all brokers regardless of terminal type
+    const broker1 = accountSet.brokers.find(b => b.position === 1);
+    const broker2 = accountSet.brokers.find(b => b.position === 2);
 
-    if (!mt5Broker || !mt4Broker) {
+    if (!broker1 || !broker2) {
       return ws.send(JSON.stringify({
         type: 'error',
-        data: { message: 'Missing MT4 or MT5 broker in account set' }
+        data: { message: 'Missing required broker positions (1 and 2) in account set' }
       }));
     }
 
@@ -904,43 +913,54 @@ async function handleSubscribePositions(ws, msg) {
       try {
         console.log('📡 Fetching positions for account set:', accountSetId);
         
-        // Get broker tokens
-        const [mt5Token, mt4Token] = await Promise.all([
-          getValidBrokerToken(mt5Broker),
-          getValidBrokerToken(mt4Broker)
+        // Get broker tokens for both brokers
+        const [broker1Token, broker2Token] = await Promise.all([
+          getValidBrokerToken(broker1),
+          getValidBrokerToken(broker2)
         ]);
 
-        // Get MT5 and MT4 positions using our proxy
-        const [mt5Response, mt4Response] = await Promise.allSettled([
-          axios.get(`${process.env.BACKEND_URL || 'http://localhost:5000'}/api/mt4mt5/mt5/opened-orders?id=${getMT5ApiId(mt5Broker)}`),
-          axios.get(`${process.env.BACKEND_URL || 'http://localhost:5000'}/api/mt4mt5/mt4/opened-orders?id=${getMT4ApiId(mt4Broker)}`)
+        // Get positions from both brokers using appropriate APIs
+        const broker1ApiId = getApiId(broker1);
+        const broker2ApiId = getApiId(broker2);
+        
+        const [broker1Response, broker2Response] = await Promise.allSettled([
+          axios.get(`${process.env.BACKEND_URL || 'http://localhost:5000'}/api/mt4mt5/${broker1.terminal.toLowerCase()}/opened-orders?id=${broker1ApiId}`),
+          axios.get(`${process.env.BACKEND_URL || 'http://localhost:5000'}/api/mt4mt5/${broker2.terminal.toLowerCase()}/opened-orders?id=${broker2ApiId}`)
         ]);
 
-        let mt5Data = [];
-        let mt4Data = [];
+        let broker1Data = [];
+        let broker2Data = [];
 
-        if (mt5Response.status === 'fulfilled' && mt5Response.value.data.success) {
-          mt5Data = Array.isArray(mt5Response.value.data.data) ? 
-            mt5Response.value.data.data : [mt5Response.value.data.data];
+        if (broker1Response.status === 'fulfilled' && broker1Response.value.data.success) {
+          broker1Data = Array.isArray(broker1Response.value.data.data) ? 
+            broker1Response.value.data.data : [broker1Response.value.data.data];
         }
 
-        if (mt4Response.status === 'fulfilled' && mt4Response.value.data.success) {
-          mt4Data = Array.isArray(mt4Response.value.data.data) ? 
-            mt4Response.value.data.data : [mt4Response.value.data.data];
+        if (broker2Response.status === 'fulfilled' && broker2Response.value.data.success) {
+          broker2Data = Array.isArray(broker2Response.value.data.data) ? 
+            broker2Response.value.data.data : [broker2Response.value.data.data];
         }
 
-        // Broadcast the positions update
+        // Broadcast the positions update with broker info
         ws.send(JSON.stringify({
           type: 'positions_update',
           data: { 
             accountSetId, 
-            mt5Data: mt5Data.filter(Boolean), 
-            mt4Data: mt4Data.filter(Boolean),
+            broker1: {
+              terminal: broker1.terminal,
+              brokerName: broker1.brokerName,
+              data: broker1Data.filter(Boolean)
+            },
+            broker2: {
+              terminal: broker2.terminal,
+              brokerName: broker2.brokerName,
+              data: broker2Data.filter(Boolean)
+            },
             timestamp: new Date()
           }
         }));
         
-        console.log(`✅ Sent positions update for ${accountSetId}: MT5=${mt5Data.length}, MT4=${mt4Data.length}`);
+        console.log(`✅ Sent positions update for ${accountSetId}: ${broker1.terminal}(${broker1.brokerName})=${broker1Data.length}, ${broker2.terminal}(${broker2.brokerName})=${broker2Data.length}`);
         
       } catch (err) {
         console.error('❌ Error fetching positions:', err);
@@ -969,15 +989,129 @@ async function handleSubscribePositions(ws, msg) {
   }
 }
 
-// Helper functions for MT4/MT5 API IDs (you'll need to implement proper mapping)
-function getMT5ApiId(broker) {
-  // For now using hardcoded - implement mapping based on broker configuration
-  return 'mf2z4i5f-lzwv-yvj0-ilv2-1ooknlivluc0';
+// Helper function to get API ID for any broker
+function getApiId(broker) {
+  if (broker.externalApiId) {
+    return broker.externalApiId;
+  }
+  
+  // Fallback to hardcoded IDs if externalApiId is not set
+  if (broker.terminal === 'MT4') {
+    return 'e7jlk16z-27xq-wbej-y63m-xgs7u82ebtxo';
+  } else if (broker.terminal === 'MT5') {
+    return 'l7ipl1tn-iwnr-pkal-5r3r-agec4p04uxx4';
+  }
+  
+  console.warn(`No API ID found for broker ${broker.terminal} (${broker.brokerName})`);
+  return null;
 }
 
-function getMT4ApiId(broker) {
-  // For now using hardcoded - implement mapping based on broker configuration
-  return 'rjooxtv5-ybf5-y7ba-vj1x-l2gpc2s82tgt';
+// ─── NEW: Handle external API open orders subscription ────────────────────────
+async function handleSubscribeOpenOrders(ws, msg) {
+  const { accountSetId } = msg;
+  if (!accountSetId) {
+    return ws.send(JSON.stringify({
+      type: 'error',
+      data: { message: 'accountSetId is required for open orders subscription' }
+    }));
+  }
+  
+  console.log('🎯 Starting open orders subscription for account set:', accountSetId);
+  
+  // Get account set with broker configuration
+  try {
+    const accountSet = await AccountSet.findByPk(accountSetId, {
+      include: [{
+        model: Broker,
+        as: 'brokers',
+        separate: true,
+        order: [['position', 'ASC']]
+      }]
+    });
+
+    if (!accountSet || !accountSet.brokers || accountSet.brokers.length === 0) {
+      return ws.send(JSON.stringify({
+        type: 'error',
+        data: { message: 'Account set not found or missing brokers' }
+      }));
+    }
+
+    // Join this socket to the account set
+    subscribeClient(ws, accountSetId);
+    
+    // Clear any existing open orders interval
+    if (ws.openOrdersInterval) clearInterval(ws.openOrdersInterval);
+    
+    // Import trading service to use the open orders functions
+    const tradingService = require('./services/tradingService');
+    
+    // Function to fetch & broadcast open orders
+    const sendOpenOrders = async () => {
+      try {
+        console.log('📡 Fetching open orders for account set:', accountSetId);
+        
+        // Use the new fetchAllOpenOrders method from trading service
+        const openOrders = await tradingService.fetchAllOpenOrders(accountSetId);
+        
+        // Debug: Log the orders being sent
+        console.log('📦 Orders being sent via WebSocket:', JSON.stringify(openOrders.map(o => ({
+          ticket: o.ticket,
+          brokerPosition: o.brokerPosition,
+          brokerId: o.brokerId,
+          brokerName: o.brokerName,
+          terminal: o.terminal,
+          profit: o.profit,
+          symbol: o.symbol
+        })), null, 2));
+
+        // Ensure each order has the proper broker identifiers
+        const enrichedOrders = openOrders.map(order => ({
+          ...order,
+          // Ensure brokerId is properly set
+          brokerId: order.brokerId || null,
+          brokerPosition: order.brokerPosition || null,
+          terminal: order.terminal || 'Unknown'
+        }));
+
+        // Broadcast the open orders update with enriched data
+        ws.send(JSON.stringify({
+          type: 'open_orders_update',
+          data: { 
+            accountSetId, 
+            orders: enrichedOrders,
+            timestamp: new Date()
+          }
+        }));
+        
+        console.log(`✅ Sent ${enrichedOrders.length} enriched orders to WebSocket client`);
+        
+        console.log(`✅ Sent open orders update for ${accountSetId}: ${openOrders.length} orders`);
+        
+      } catch (err) {
+        console.error('❌ Error fetching open orders:', err);
+        ws.send(JSON.stringify({
+          type: 'error',
+          data: { 
+            message: 'Failed to fetch open orders data',
+            accountSetId 
+          }
+        }));
+      }
+    };
+    
+    // Send immediately, then every 3 seconds
+    await sendOpenOrders();
+    ws.openOrdersInterval = setInterval(sendOpenOrders, 3000);
+    
+    console.log('✅ Open orders subscription started for account set:', accountSetId);
+    
+  } catch (error) {
+    console.error('❌ Error setting up open orders subscription:', error);
+    ws.send(JSON.stringify({
+      type: 'error',
+      data: { message: 'Failed to setup open orders subscription' }
+    }));
+  }
 }
 
 async function broadcastBalanceUpdates(accountSetId) {
@@ -1107,6 +1241,7 @@ syncDatabase()
     } catch (err) {
       console.error('❌ Failed to start database cleanup service:', err);
     }
+
     
     // Start cleanup scheduler
     const cleanupInterval = parseInt(process.env.CLEANUP_INTERVAL_HOURS) || 24;

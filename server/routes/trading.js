@@ -992,8 +992,8 @@ router.get('/active-trades', async (req, res) => {
       whereClause.accountSetId = accountSetId;
     }
 
-    // Only get trades with 'Active' status
-    whereClause.status = 'Active';
+    // Only get trades with 'Active' or 'PartiallyFilled' status
+    whereClause.status = ['Active', 'PartiallyFilled'];
 
     const activeTrades = await ActiveTrade.findAll({
       where: whereClause,
@@ -1144,6 +1144,116 @@ router.post('/close-trade', async (req, res) => {
       });
     }
   } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+});
+
+// ─── POST /api/trading/close-trade-external - Close trade via external API ─────────
+router.post('/close-trade-external', async (req, res) => {
+  try {
+    const { tradeId, closeResults, reason = 'Manual' } = req.body;
+    const userId = req.user.id;
+
+    if (!tradeId || !closeResults) {
+      return res.status(400).json({
+        success: false,
+        message: 'Trade ID and close results are required'
+      });
+    }
+
+    // Get the active trade
+    const activeTrade = await ActiveTrade.findOne({
+      where: { tradeId, userId },
+      include: [
+        { model: Broker, as: 'broker1' },
+        { model: Broker, as: 'broker2' }
+      ]
+    });
+
+    if (!activeTrade) {
+      return res.status(404).json({
+        success: false,
+        message: 'Active trade not found'
+      });
+    }
+
+    // Extract close data from external API responses
+    let broker1CloseData = null;
+    let broker2CloseData = null;
+    let totalProfit = 0;
+
+    closeResults.forEach(result => {
+      if (result.success && result.data) {
+        if (result.broker === 'Broker 1') {
+          broker1CloseData = result.data;
+          totalProfit += parseFloat(result.data.profit) || 0;
+        } else if (result.broker === 'Broker 2') {
+          broker2CloseData = result.data;
+          totalProfit += parseFloat(result.data.profit) || 0;
+        }
+      }
+    });
+
+    // Calculate trade duration
+    const tradeDurationMinutes = Math.floor(
+      (Date.now() - new Date(activeTrade.createdAt).getTime()) / (1000 * 60)
+    );
+
+    // Create closed trade record
+    const closedTrade = await ClosedTrade.create({
+      tradeId: activeTrade.tradeId,
+      accountSetId: activeTrade.accountSetId,
+      userId: activeTrade.userId,
+      
+      broker1Id: activeTrade.broker1Id,
+      broker1Ticket: activeTrade.broker1Ticket,
+      broker1Symbol: activeTrade.broker1Symbol,
+      broker1Direction: activeTrade.broker1Direction,
+      broker1Volume: activeTrade.broker1Volume,
+      broker1OpenPrice: activeTrade.broker1OpenPrice,
+      broker1ClosePrice: broker1CloseData?.closePrice || 0,
+      broker1OpenTime: activeTrade.broker1OpenTime,
+      broker1Profit: broker1CloseData?.profit || 0,
+      
+      broker2Id: activeTrade.broker2Id,
+      broker2Ticket: activeTrade.broker2Ticket,
+      broker2Symbol: activeTrade.broker2Symbol,
+      broker2Direction: activeTrade.broker2Direction,
+      broker2Volume: activeTrade.broker2Volume,
+      broker2OpenPrice: activeTrade.broker2OpenPrice,
+      broker2ClosePrice: broker2CloseData?.closePrice || 0,
+      broker2OpenTime: activeTrade.broker2OpenTime,
+      broker2Profit: broker2CloseData?.profit || 0,
+      
+      executionPremium: activeTrade.executionPremium,
+      closePremium: 0, // Could be calculated if needed
+      totalProfit: totalProfit,
+      takeProfit: activeTrade.takeProfit,
+      stopLoss: activeTrade.stopLoss,
+      closeReason: reason,
+      tradeDurationMinutes,
+      
+      broker1Latency: activeTrade.broker1Latency,
+      broker2Latency: activeTrade.broker2Latency,
+      comment: activeTrade.comment,
+      scalpingMode: activeTrade.scalpingMode
+    });
+
+    // Remove from active trades
+    await activeTrade.destroy();
+
+    res.json({
+      success: true,
+      closedTrade,
+      closeResults,
+      message: 'Trade closed successfully via external API'
+    });
+
+  } catch (error) {
+    console.error('Error closing trade externally:', error);
     res.status(500).json({
       success: false,
       message: error.message

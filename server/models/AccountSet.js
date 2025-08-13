@@ -135,6 +135,11 @@ const Broker = sequelize.define('Broker', {
     allowNull: false,
     defaultValue: 1,
     comment: 'Order position of broker within an account set (1 for first, 2 for second)'
+  },
+  externalApiId: {
+    type: DataTypes.STRING,
+    allowNull: true,
+    comment: 'External API ID for fetching open orders from MT4/MT5 services'
   }
 }, {
   tableName: 'brokers',

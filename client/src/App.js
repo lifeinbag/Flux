@@ -16,15 +16,15 @@ import NavBar from './components/NavBar';
 import Signup from './pages/Signup';
 import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
-import ActiveTrades from './pages/ActiveTrades';
-import ClosedTrades from './pages/ClosedTrades';
-import PendingOrders from './pages/PendingOrders';
 import Network from './pages/Network';
 import Admin from './pages/Admin';
 import ForgotPassword from './pages/ForgotPassword';
 import ResetPassword from './pages/ResetPassword';
 import LinkAccount from './pages/LinkAccount';
 import TradeExecution from './components/TradeExecution';
+import ActiveTrades from './pages/ActiveTrades';
+import ClosedTrades from './pages/ClosedTrades';
+import PendingOrders from './pages/PendingOrders';
 
 function TradeExecutionWrapper() {
   const [accountSets, setAccountSets] = useState([]);

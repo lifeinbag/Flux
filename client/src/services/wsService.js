@@ -28,8 +28,8 @@ function startHeartbeat() {
   
   heartbeatInterval = setInterval(() => {
     const now = Date.now();
-    // Check if we missed a pong (no response for 45 seconds)
-    if (lastPongTime > 0 && now - lastPongTime > 45000) {
+    // Check if we missed a pong (no response for 90 seconds) - increased from 45s
+    if (lastPongTime > 0 && now - lastPongTime > 90000) {
       console.warn('💔 Heartbeat timeout - connection may be stale');
       if (socket) {
         socket.close(1000, 'Heartbeat timeout');
@@ -37,7 +37,7 @@ function startHeartbeat() {
       return;
     }
     sendHeartbeat();
-  }, 20000); // Send ping every 20 seconds
+  }, 30000); // Send ping every 30 seconds - increased from 20s
 }
 
 /**
@@ -337,6 +337,42 @@ export function subscribeToPositions(accountSetId) {
     // No socket exists, connect first
     connectWS(accountSetId);
     setTimeout(() => subscribeToPositions(accountSetId), 1000);
+  }
+}
+
+/**
+ * Subscribe to external API open orders updates for a given accountSetId.
+ */
+export function subscribeToOpenOrders(accountSetId) {
+  const sendSub = () => {
+    if (socket && socket.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({
+        action: 'subscribe_open_orders',
+        accountSetId
+      }));
+      console.log('✅ Subscribed to open orders updates for:', accountSetId);
+    } else {
+      console.warn('⚠ Cannot subscribe to open orders - WebSocket not ready, readyState:', socket?.readyState);
+      // Try to establish connection
+      if (!socket) {
+        console.log('🔄 No WebSocket connection, attempting to connect...');
+        connectWS(accountSetId);
+        // Retry subscription after connection attempt
+        setTimeout(() => subscribeToOpenOrders(accountSetId), 2000);
+      }
+    }
+  };
+
+  if (socket) {
+    if (socket.readyState === WebSocket.OPEN) {
+      sendSub();
+    } else {
+      socket.addEventListener('open', sendSub, { once: true });
+    }
+  } else {
+    // No socket exists, connect first
+    connectWS(accountSetId);
+    setTimeout(() => subscribeToOpenOrders(accountSetId), 1000);
   }
 }
 

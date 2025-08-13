@@ -175,6 +175,7 @@ export default function Dashboard() {
   const latestRef = useRef({});
   const [wsConnected, setWsConnected] = useState(false);
   const [wsStatus, setWsStatus] = useState('disconnected');
+  const [dataAvailable, setDataAvailable] = useState(true);
   const lastBalanceUpdate = useRef(Date.now());
   const wsStatusCheckInterval = useRef(null);
   const brokerLookupCache = useRef(new Map());
@@ -540,6 +541,7 @@ export default function Dashboard() {
         
         lastBalanceUpdate.current = Date.now();
         setWsConnected(true);
+        setDataAvailable(true);
       }, 50); // 50ms debounce
     };
     
@@ -587,12 +589,14 @@ export default function Dashboard() {
       setWsStatus(status);
       setWsConnected(isWSConnected());
       
-      // Check if we've missed balance updates
+      // Check if we've missed balance updates - don't disconnect, just mark data unavailable
       const timeSinceLastUpdate = Date.now() - lastBalanceUpdate.current;
-      if (timeSinceLastUpdate > 30000) { // 30 seconds (increased from 15)
-        setWsConnected(false);
+      if (timeSinceLastUpdate > 60000) { // 60 seconds - increased from 30s
+        setDataAvailable(false);
+      } else if (timeSinceLastUpdate < 30000) {
+        setDataAvailable(true);
       }
-    }, 5000); // Reduced polling frequency from 2s to 5s
+    }, 10000); // Reduced polling frequency to 10s
 
     wsStatusCheckInterval.current = statusCheck;
     
@@ -814,7 +818,7 @@ export default function Dashboard() {
             position: 'fixed',
             top: '80px',
             right: '20px',
-            backgroundColor: wsConnected ? '#22c55e' : '#ef4444',
+            backgroundColor: wsConnected && dataAvailable ? '#22c55e' : wsConnected && !dataAvailable ? '#f59e0b' : '#ef4444',
             color: 'white',
             padding: '10px 15px',
             borderRadius: '8px',
@@ -824,7 +828,9 @@ export default function Dashboard() {
             boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
             border: '1px solid rgba(255,255,255,0.1)'
           }}>
-            {wsConnected ? '✅ WebSocket Connected' : `🔌 WebSocket ${wsStatus}`}
+            {wsConnected && dataAvailable ? '✅ WebSocket Connected' : 
+             wsConnected && !dataAvailable ? '⚠️ Connected (Service Unavailable)' : 
+             `🔌 WebSocket ${wsStatus}`}
           </div>
         )}
         
