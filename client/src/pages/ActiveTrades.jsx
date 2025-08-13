@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import API from '../services/api';
-import { subscribeToOpenOrders, onMessage, offMessage, connectWS, subscribeToQuotes } from '../services/wsService';
+import { subscribeToOpenOrders, onMessage, offMessage, connectWS, subscribeToQuotes, subscribeToPremium, subscribeToPositions } from '../services/wsService';
+import mt4mt5Service from '../services/mt4mt5Service';
 
 export default function ActiveTrades() {
   const [accountSets, setAccountSets] = useState([]);
@@ -28,8 +29,28 @@ export default function ActiveTrades() {
 
   useEffect(() => {
     if (selectedSetId) {
-      console.log('🟢 ActiveTrades: Selected account set changed to:', selectedSetId);
       loadActiveTrades();
+      
+      // Clean up previous subscriptions first
+      if (window.wsCleanupFunctions) {
+        window.wsCleanupFunctions.forEach(cleanup => cleanup());
+        window.wsCleanupFunctions = [];
+      }
+      
+      // Initialize MT4/MT5 service for this account set
+      mt4mt5Service.initializeAccountSet(selectedSetId);
+      
+      // Subscribe to premium and positions updates for this account set
+      const accountSet = accountSets.find(set => (set._id || set.id) === selectedSetId);
+      if (accountSet) {
+        // Add a small delay to ensure cleanup is complete
+        setTimeout(() => {
+          if (accountSet.futureSymbol && accountSet.spotSymbol) {
+            subscribeToPremium(selectedSetId, accountSet.futureSymbol, accountSet.spotSymbol);
+          }
+          subscribeToPositions(selectedSetId);
+        }, 100);
+      }
       
       // Subscribe to real-time updates via WebSocket
       console.log('📡 ActiveTrades: Subscribing to open orders for:', selectedSetId);
@@ -41,7 +62,7 @@ export default function ActiveTrades() {
       setBuyPremium(0);
       setSellPremium(0);
     }
-  }, [selectedSetId]);
+  }, [selectedSetId, accountSets]);
 
   useEffect(() => {
     // Set up WebSocket listeners for real-time updates
@@ -150,9 +171,79 @@ export default function ActiveTrades() {
       // Handle balance updates if needed
     });
 
+    // Add positions update handler for real-time profit updates
+    const unsubscribePositions = onMessage('positions_update', (msg) => {
+      const payload = msg?.data ?? msg;
+      const accountSetId = payload?.accountSetId;
+      
+      if (accountSetId !== selectedSetId) return;
+      
+      console.log('📈 Processing positions_update:', payload);
+      
+      // Process MT4/MT5 position data to update profits
+      const mt5Data = payload.mt5Data || [];
+      const mt4Data = payload.mt4Data || [];
+      
+      console.log('📊 Position data received:', { mt5Count: mt5Data.length, mt4Count: mt4Data.length });
+      
+      // Update active trades with new profit data
+      setActiveTrades(prev => prev.map(trade => {
+        let broker1Profit = trade.broker1Profit || 0;
+        let broker2Profit = trade.broker2Profit || 0;
+        
+        // Find matching positions for this trade based on ticket numbers
+        // We need to check both MT4 and MT5 data for each broker ticket
+        
+        // For broker1 ticket
+        if (trade.broker1Ticket) {
+          const mt5Match = mt5Data.find(pos => pos.ticket?.toString() === trade.broker1Ticket?.toString());
+          const mt4Match = mt4Data.find(pos => pos.ticket?.toString() === trade.broker1Ticket?.toString());
+          
+          if (mt5Match) {
+            broker1Profit = parseFloat(mt5Match.profit) || 0;
+            console.log(`✅ Updated broker1 profit from MT5: ${trade.broker1Ticket} = ${broker1Profit}`);
+          } else if (mt4Match) {
+            broker1Profit = parseFloat(mt4Match.profit) || 0;
+            console.log(`✅ Updated broker1 profit from MT4: ${trade.broker1Ticket} = ${broker1Profit}`);
+          }
+        }
+        
+        // For broker2 ticket
+        if (trade.broker2Ticket) {
+          const mt5Match = mt5Data.find(pos => pos.ticket?.toString() === trade.broker2Ticket?.toString());
+          const mt4Match = mt4Data.find(pos => pos.ticket?.toString() === trade.broker2Ticket?.toString());
+          
+          if (mt5Match) {
+            broker2Profit = parseFloat(mt5Match.profit) || 0;
+            console.log(`✅ Updated broker2 profit from MT5: ${trade.broker2Ticket} = ${broker2Profit}`);
+          } else if (mt4Match) {
+            broker2Profit = parseFloat(mt4Match.profit) || 0;
+            console.log(`✅ Updated broker2 profit from MT4: ${trade.broker2Ticket} = ${broker2Profit}`);
+          }
+        }
+        
+        const totalProfit = broker1Profit + broker2Profit;
+        
+        return {
+          ...trade,
+          broker1Profit,
+          broker2Profit,
+          totalProfit
+        };
+      }));
+      
+      // Update total P&L
+      setActiveTrades(current => {
+        const newTotal = current.reduce((sum, trade) => sum + (trade.totalProfit || 0), 0);
+        setTotalPnL(newTotal);
+        return current;
+      });
+    });
+
     return () => {
       unsubscribeOpenOrders();
       unsubscribeBalance();
+      unsubscribePositions();
     };
   }, [selectedSetId]);
 

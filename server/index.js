@@ -919,13 +919,10 @@ async function handleSubscribePositions(ws, msg) {
           getValidBrokerToken(broker2)
         ]);
 
-        // Get positions from both brokers using appropriate APIs
-        const broker1ApiId = getApiId(broker1);
-        const broker2ApiId = getApiId(broker2);
-        
+        // Use the actual broker tokens instead of hardcoded IDs
         const [broker1Response, broker2Response] = await Promise.allSettled([
-          axios.get(`${process.env.BACKEND_URL || 'http://localhost:5000'}/api/mt4mt5/${broker1.terminal.toLowerCase()}/opened-orders?id=${broker1ApiId}`),
-          axios.get(`${process.env.BACKEND_URL || 'http://localhost:5000'}/api/mt4mt5/${broker2.terminal.toLowerCase()}/opened-orders?id=${broker2ApiId}`)
+          axios.get(`${process.env.BACKEND_URL || 'http://localhost:5000'}/api/mt4mt5/${broker1.terminal.toLowerCase()}/opened-orders?id=${broker1Token}`),
+          axios.get(`${process.env.BACKEND_URL || 'http://localhost:5000'}/api/mt4mt5/${broker2.terminal.toLowerCase()}/opened-orders?id=${broker2Token}`)
         ]);
 
         let broker1Data = [];
@@ -941,26 +938,35 @@ async function handleSubscribePositions(ws, msg) {
             broker2Response.value.data.data : [broker2Response.value.data.data];
         }
 
-        // Broadcast the positions update with broker info
+        // Ensure profit and swap data is properly parsed
+        broker1Data = broker1Data.filter(Boolean).map(trade => ({
+          ...trade,
+          profit: parseFloat(trade.profit) || 0,
+          swap: parseFloat(trade.swap) || 0,
+          ticket: trade.ticket?.toString()
+        }));
+
+        broker2Data = broker2Data.filter(Boolean).map(trade => ({
+          ...trade,
+          profit: parseFloat(trade.profit) || 0,
+          swap: parseFloat(trade.swap) || 0,
+          ticket: trade.ticket?.toString()
+        }));
+
+        // Broadcast the positions update
         ws.send(JSON.stringify({
           type: 'positions_update',
           data: { 
             accountSetId, 
-            broker1: {
-              terminal: broker1.terminal,
-              brokerName: broker1.brokerName,
-              data: broker1Data.filter(Boolean)
-            },
-            broker2: {
-              terminal: broker2.terminal,
-              brokerName: broker2.brokerName,
-              data: broker2Data.filter(Boolean)
-            },
+            mt5Data: broker1.terminal === 'MT5' ? broker1Data : (broker2.terminal === 'MT5' ? broker2Data : []),
+            mt4Data: broker1.terminal === 'MT4' ? broker1Data : (broker2.terminal === 'MT4' ? broker2Data : []),
             timestamp: new Date()
           }
         }));
         
-        console.log(`✅ Sent positions update for ${accountSetId}: ${broker1.terminal}(${broker1.brokerName})=${broker1Data.length}, ${broker2.terminal}(${broker2.brokerName})=${broker2Data.length}`);
+        const mt5Count = broker1.terminal === 'MT5' ? broker1Data.length : (broker2.terminal === 'MT5' ? broker2Data.length : 0);
+        const mt4Count = broker1.terminal === 'MT4' ? broker1Data.length : (broker2.terminal === 'MT4' ? broker2Data.length : 0);
+        console.log(`✅ Sent positions update for ${accountSetId}: MT5=${mt5Count}, MT4=${mt4Count}`);
         
       } catch (err) {
         console.error('❌ Error fetching positions:', err);
