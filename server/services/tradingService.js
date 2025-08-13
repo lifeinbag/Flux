@@ -3,6 +3,8 @@ const https = require('https');
 // Removed fs - not needed for file logging
 const { ActiveTrade, ClosedTrade, PendingOrder, AccountSet, Broker, sequelize } = require('../models');
 const latencyMonitor = require('./latencyMonitor');
+const unifiedQuoteService = require('./unifiedQuoteService');
+const logger = require('../utils/logger');
 const { TokenManager } = require('../token-manager');
 
 const httpsAgent = new https.Agent({
@@ -201,67 +203,26 @@ class TradingService {
         throw new Error(`Missing symbols - Future: ${accountSet.futureSymbol}, Spot: ${accountSet.spotSymbol}`);
       }
 
-      // Get current quotes for premium calculation
-      const [futureQuote, spotQuote] = await this.getCurrentQuotes(
+      // ✅ FIX: Use unified quote service for consistent quotes
+      logger.info(`🎯 Trade Execution: Getting quotes via UnifiedQuoteService for ${accountSet.futureSymbol}/${accountSet.spotSymbol}`);
+      
+      const quotes = await unifiedQuoteService.getQuotes(
         broker1, accountSet.futureSymbol,
         broker2, accountSet.spotSymbol
       );
 
-      if (!futureQuote || !spotQuote) {
-        // Try one more time with individual requests instead of parallel
-        try {
-          console.log('FALLBACK: Trying individual quote requests');
-          
-          const token1 = await this.getValidBrokerToken(broker1);
-          const token2 = await this.getValidBrokerToken(broker2);
-          const client1 = broker1.terminal === 'MT5' ? mt5Client : mt4Client;
-          const client2 = broker2.terminal === 'MT5' ? mt5Client : mt4Client;
-          
-          // Try sequentially instead of parallel
-          const response1 = await client1.get('/GetQuote', { 
-            params: { id: token1, symbol: accountSet.futureSymbol }, 
-            timeout: 30000 
-          });
-          
-          const response2 = await client2.get('/GetQuote', { 
-            params: { id: token2, symbol: accountSet.spotSymbol }, 
-            timeout: 30000 
-          });
-          
-          const fallbackQuote1 = response1.data;
-          const fallbackQuote2 = response2.data;
-          
-          if (fallbackQuote1?.bid && fallbackQuote1?.ask && fallbackQuote2?.bid && fallbackQuote2?.ask) {
-            console.log('FALLBACK SUCCESS: Got quotes individually');
-            
-            const futureQuoteFallback = {
-              bid: parseFloat(fallbackQuote1.bid),
-              ask: parseFloat(fallbackQuote1.ask),
-              symbol: accountSet.futureSymbol
-            };
-            
-            const spotQuoteFallback = {
-              bid: parseFloat(fallbackQuote2.bid),
-              ask: parseFloat(fallbackQuote2.ask),
-              symbol: accountSet.spotSymbol
-            };
-            
-            // Continue with fallback quotes
-            const currentPremiumFallback = direction === 'Buy' ? 
-              (futureQuoteFallback.ask || 0) - (spotQuoteFallback.bid || 0) :
-              (futureQuoteFallback.bid || 0) - (spotQuoteFallback.ask || 0);
-            
-            return await this.continueTradeExecution(
-              broker1, broker2, accountSet, direction, volume, comment, 
-              futureQuoteFallback, spotQuoteFallback, currentPremiumFallback, 
-              takeProfit, takeProfitMode, stopLoss, scalpingMode, userId, accountSetId
-            );
-          }
-        } catch (fallbackError) {
-          console.log('FALLBACK FAILED:', fallbackError.message);
-        }
-        
-        throw new Error('Unable to get current quotes for premium calculation after all attempts');
+      if (!quotes || quotes.length !== 2) {
+        throw new Error('Unable to get quotes from unified quote service');
+      }
+
+      const [futureQuote, spotQuote] = quotes;
+      
+      logger.info(`📊 Execution quotes: Future=${futureQuote.bid}/${futureQuote.ask} (${futureQuote.source}), Spot=${spotQuote.bid}/${spotQuote.ask} (${spotQuote.source})`);
+
+      // ✅ FIX: Validate quotes from unified service
+      if (!futureQuote || !spotQuote || !futureQuote.bid || !futureQuote.ask || !spotQuote.bid || !spotQuote.ask) {
+        logger.error(`❌ Invalid quotes from unified service: Future=${JSON.stringify(futureQuote)}, Spot=${JSON.stringify(spotQuote)}`);
+        throw new Error('Invalid quotes received from unified quote service');
       }
 
       // Calculate current premium based on direction
@@ -271,6 +232,8 @@ class TradingService {
       } else {
         currentPremium = (futureQuote.bid || 0) - (spotQuote.ask || 0);
       }
+
+      logger.info(`📊 Execution Premium: ${currentPremium} (Direction: ${direction})`);
 
       return await this.continueTradeExecution(
         broker1, broker2, accountSet, direction, volume, comment, 
@@ -439,7 +402,7 @@ class TradingService {
         throw new Error('Active trade not found');
       }
 
-      console.log(`📋 Found trade: Broker1 ticket ${activeTrade.broker1Ticket}, Broker2 ticket ${activeTrade.broker2Ticket}`);
+      logger.info(`📋 Found trade: Broker1 ticket ${activeTrade.broker1Ticket}, Broker2 ticket ${activeTrade.broker2Ticket}`);
 
       // ✅ FIX: Close orders sequentially with better error handling
       let broker1Result = { success: false, error: 'Not executed', profit: 0 };
@@ -447,26 +410,26 @@ class TradingService {
       
       // Close broker1 order
       if (activeTrade.broker1Ticket) {
-        console.log(`🔄 Closing Broker1 order ${activeTrade.broker1Ticket}...`);
+        logger.info(`🔄 Closing Broker1 order ${activeTrade.broker1Ticket}...`);
         broker1Result = await this.closeOrderOnBroker(activeTrade.broker1, activeTrade.broker1Ticket);
-        console.log(`📊 Broker1 result:`, broker1Result);
+        logger.info(`📊 Broker1 result:`, broker1Result);
       }
       
       // Close broker2 order
       if (activeTrade.broker2Ticket) {
-        console.log(`🔄 Closing Broker2 order ${activeTrade.broker2Ticket}...`);
+        logger.info(`🔄 Closing Broker2 order ${activeTrade.broker2Ticket}...`);
         broker2Result = await this.closeOrderOnBroker(activeTrade.broker2, activeTrade.broker2Ticket);
-        console.log(`📊 Broker2 result:`, broker2Result);
+        logger.info(`📊 Broker2 result:`, broker2Result);
       }
 
       const closeResults = [broker1Result, broker2Result];
       const successCount = closeResults.filter(r => r.success).length;
       
-      console.log(`✅ Closed ${successCount}/2 positions successfully`);
+      logger.info(`✅ Closed ${successCount}/2 positions successfully`);
 
-      // ✅ FIX: Get quotes using cached service to avoid redundant API calls
-      const cachedQuoteService = require('./cachedQuoteService');
-      const quotes = await cachedQuoteService.getQuotes(
+      // ✅ FIX: Get quotes using unified service for consistency
+      logger.info(`🎯 Trade Closure: Getting quotes via UnifiedQuoteService for ${activeTrade.broker1Symbol}/${activeTrade.broker2Symbol}`);
+      const quotes = await unifiedQuoteService.getQuotes(
         activeTrade.broker1, activeTrade.broker1Symbol,
         activeTrade.broker2, activeTrade.broker2Symbol
       );
@@ -751,7 +714,7 @@ class TradingService {
       throw new Error('Orders executed but ticket numbers not received');
     }
     
-    console.log('✅ Both brokers executed successfully, creating ActiveTrade record');
+    logger.success('✅ Both brokers executed successfully, creating ActiveTrade record');
     
     // ✅ FIX: Use database transaction to ensure data consistency
     const transaction = await sequelize.transaction();
@@ -786,13 +749,15 @@ class TradingService {
         status: 'Active'
       }, { transaction });
       
-      console.log('✅ ActiveTrade created successfully:', {
+      logger.success('✅ ActiveTrade created successfully:', {
         tradeId: activeTrade.tradeId,
         broker1Ticket: broker1Result.ticket,
         broker2Ticket: broker2Result.ticket,
         broker1Direction: direction,
         broker2Direction: this.getReverseDirection(direction),
-        executionPremium: currentPremium
+        executionPremium: currentPremium,
+        futureQuoteSource: futureQuote.source,
+        spotQuoteSource: spotQuote.source
       });
 
       // Store latency data in AccountSet for persistence within transaction
@@ -804,7 +769,7 @@ class TradingService {
       
       // ✅ FIX: Commit transaction to ensure immediate database consistency
       await transaction.commit();
-      console.log('✅ Database transaction committed successfully');
+      logger.success('✅ Database transaction committed successfully');
       
       return {
         success: true,
@@ -820,7 +785,7 @@ class TradingService {
       
     } catch (transactionError) {
       await transaction.rollback();
-      console.error('❌ Database transaction failed, rolling back:', transactionError);
+      logger.error('❌ Database transaction failed, rolling back:', transactionError);
       throw new Error(`Failed to save trade data: ${transactionError.message}`);
     }
   }

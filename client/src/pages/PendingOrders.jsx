@@ -6,6 +6,7 @@ export default function PendingOrders() {
   const [selectedSetId, setSelectedSetId] = useState('');
   const [pendingOrders, setPendingOrders] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [autoRefresh, setAutoRefresh] = useState(true);
 
   useEffect(() => {
     loadAccountSets();
@@ -16,6 +17,18 @@ export default function PendingOrders() {
       loadPendingOrders();
     }
   }, [selectedSetId]);
+
+  // ✅ AUTO-REFRESH: Refresh pending orders every 5 seconds
+  useEffect(() => {
+    if (!selectedSetId || !autoRefresh) return;
+
+    const interval = setInterval(() => {
+      console.log('🔄 Auto-refreshing pending orders...');
+      loadPendingOrders(false); // Don't show loading spinner for auto-refresh
+    }, 5000); // Refresh every 5 seconds
+
+    return () => clearInterval(interval);
+  }, [selectedSetId, autoRefresh]);
 
   const loadAccountSets = async () => {
     try {
@@ -32,17 +45,22 @@ export default function PendingOrders() {
     }
   };
 
-  const loadPendingOrders = async () => {
+  const loadPendingOrders = async (showLoading = true) => {
     try {
-      setLoading(true);
+      if (showLoading) {
+        setLoading(true);
+      }
       const res = await API.get(`/trading/pending-orders?accountSetId=${selectedSetId}`);
       if (res.data.success) {
         setPendingOrders(res.data.orders);
+        console.log(`📋 Loaded ${res.data.orders.length} pending orders`);
       }
     } catch (err) {
       console.error('Failed to load pending orders:', err);
     } finally {
-      setLoading(false);
+      if (showLoading) {
+        setLoading(false);
+      }
     }
   };
 
@@ -149,12 +167,35 @@ export default function PendingOrders() {
           borderRadius: '12px',
           marginBottom: '1rem'
         }}>
-          <h2 style={{ margin: '0 0 0.5rem 0', fontSize: '1.4rem' }}>
-            Pending Orders Queue
-          </h2>
-          <p style={{ margin: 0, fontSize: '1rem' }}>
-            Total: {pendingOrders.length} orders
-          </p>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div>
+              <h2 style={{ margin: '0 0 0.5rem 0', fontSize: '1.4rem' }}>
+                Pending Orders Queue
+              </h2>
+              <p style={{ margin: 0, fontSize: '1rem' }}>
+                Total: {pendingOrders.length} orders
+              </p>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <label style={{ fontSize: '0.9rem', color: 'white' }}>
+                Auto-refresh:
+              </label>
+              <button
+                onClick={() => setAutoRefresh(!autoRefresh)}
+                style={{
+                  background: autoRefresh ? '#4CAF50' : '#f44336',
+                  color: 'white',
+                  border: 'none',
+                  padding: '0.3rem 0.8rem',
+                  borderRadius: '6px',
+                  fontSize: '0.8rem',
+                  cursor: 'pointer'
+                }}
+              >
+                {autoRefresh ? '✓ ON' : '✗ OFF'}
+              </button>
+            </div>
+          </div>
         </div>
 
         {loading ? (

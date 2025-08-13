@@ -1,6 +1,7 @@
 const { PendingOrder, AccountSet, Broker } = require('../models');
 const tradingService = require('./tradingService');
-const cachedQuoteService = require('./cachedQuoteService');
+const unifiedQuoteService = require('./unifiedQuoteService');
+const logger = require('../utils/logger');
 
 class PendingOrderMonitor {
   constructor() {
@@ -116,23 +117,26 @@ class PendingOrderMonitor {
         return;
       }
 
-      // ✅ FIX: Use cached quotes instead of fresh API calls
-      const quotes = await cachedQuoteService.getQuotes(
+      // ✅ FIX: Use unified quote service for consistent quotes with trade execution
+      logger.info(`🔍 Pending Order Monitor: Checking order ${order.orderId.slice(-8)} with UnifiedQuoteService`);
+      const quotes = await unifiedQuoteService.getQuotes(
         broker1, order.broker1Symbol,
         broker2, order.broker2Symbol
       );
 
       if (!quotes || quotes.length !== 2) {
-        this.recordError(order, 'Unable to get current quotes from cache or API');
+        this.recordError(order, 'Unable to get current quotes from unified quote service');
         return;
       }
 
       const [futureQuote, spotQuote] = quotes;
       
       if (!futureQuote || !spotQuote || futureQuote.bid === 0 || spotQuote.bid === 0) {
-        this.recordError(order, 'Invalid quote data received');
+        this.recordError(order, 'Invalid quote data received from unified service');
         return;
       }
+
+      logger.info(`💱 Monitor quotes: Future=${futureQuote.bid}/${futureQuote.ask} (${futureQuote.source}), Spot=${spotQuote.bid}/${spotQuote.ask} (${spotQuote.source})`);
 
       // Calculate current premium based on direction
       let currentPremium;
@@ -162,18 +166,39 @@ class PendingOrderMonitor {
     }
   }
 
-  // Check if target premium is reached
+  // Check if target premium is reached with deviation validation
   checkTargetReached(order, currentPremium) {
     const target = parseFloat(order.targetPremium);
     const current = parseFloat(currentPremium);
+    const premiumDifference = Math.abs(current - target);
 
+    logger.info(`🎯 Premium Check for order ${order.orderId.slice(-8)}: Target=${target}, Current=${current}, Diff=${premiumDifference}`);
+
+    // Check if target premium condition is met
+    let targetReached = false;
     if (order.direction === 'Buy') {
       // For buy orders, execute when current premium is <= target (cheaper)
-      return current <= target;
+      targetReached = current <= target;
     } else {
       // For sell orders, execute when current premium is >= target (more expensive)
-      return current >= target;
+      targetReached = current >= target;
     }
+
+    if (!targetReached) {
+      return false; // Target not reached yet
+    }
+
+    // ✅ FIX: Add premium deviation validation to prevent large execution differences
+    const maxDeviationAllowed = parseFloat(process.env.MAX_PREMIUM_DEVIATION) || 0.10; // Default 0.10
+    
+    if (premiumDifference > maxDeviationAllowed) {
+      logger.warn(`⚠️ Order ${order.orderId.slice(-8)}: Premium deviation too large! Target=${target}, Current=${current}, Deviation=${premiumDifference} > ${maxDeviationAllowed}`);
+      logger.warn(`⚠️ Skipping execution to prevent large slippage. Consider adjusting MAX_PREMIUM_DEVIATION environment variable.`);
+      return false; // Don't execute due to large deviation
+    }
+
+    logger.success(`✅ Order ${order.orderId.slice(-8)}: Target reached with acceptable deviation ${premiumDifference} <= ${maxDeviationAllowed}`);
+    return true;
   }
 
   // Execute pending order when target is reached
@@ -192,15 +217,14 @@ class PendingOrderMonitor {
       });
 
       if (result.success) {
-        // Mark order as filled
-        order.status = 'Filled';
-        order.filledTradeId = result.trade.tradeId;
-        order.filledAt = new Date();
-        order.filledPremium = actualPremium;
-        await order.save();
-
+        // ✅ FIX: Remove executed order from database instead of marking as Filled
         console.log(`✅ Pending order ${order.orderId} executed successfully!`);
         console.log(`Target: ${order.targetPremium}, Actual: ${actualPremium}`);
+        console.log(`🗑️ Removing executed order from pending orders database...`);
+        
+        await order.destroy();
+        
+        console.log(`✅ Order ${order.orderId} removed from pending orders database`);
       } else {
         // Execution failed, record error but keep order active
         await this.recordError(order, `Execution failed: ${result.error}`);
