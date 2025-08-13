@@ -921,8 +921,12 @@ async function handleSubscribePositions(ws, msg) {
 
         // Use the actual broker tokens instead of hardcoded IDs
         const [broker1Response, broker2Response] = await Promise.allSettled([
-          axios.get(`${process.env.BACKEND_URL || 'http://localhost:5000'}/api/mt4mt5/${broker1.terminal.toLowerCase()}/opened-orders?id=${broker1Token}`),
-          axios.get(`${process.env.BACKEND_URL || 'http://localhost:5000'}/api/mt4mt5/${broker2.terminal.toLowerCase()}/opened-orders?id=${broker2Token}`)
+          axios.get(`${process.env.BACKEND_URL || 'http://localhost:5000'}/api/mt4mt5/${broker1.terminal.toLowerCase()}/opened-orders`, {
+            params: { id: broker1Token }
+          }),
+          axios.get(`${process.env.BACKEND_URL || 'http://localhost:5000'}/api/mt4mt5/${broker2.terminal.toLowerCase()}/opened-orders`, {
+            params: { id: broker2Token }
+          })
         ]);
 
         let broker1Data = [];

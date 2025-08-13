@@ -187,56 +187,57 @@ export default function ActiveTrades() {
       console.log('📊 Position data received:', { mt5Count: mt5Data.length, mt4Count: mt4Data.length });
       
       // Update active trades with new profit data
-      setActiveTrades(prev => prev.map(trade => {
-        let broker1Profit = trade.broker1Profit || 0;
-        let broker2Profit = trade.broker2Profit || 0;
-        
-        // Find matching positions for this trade based on ticket numbers
-        // We need to check both MT4 and MT5 data for each broker ticket
-        
-        // For broker1 ticket
-        if (trade.broker1Ticket) {
-          const mt5Match = mt5Data.find(pos => pos.ticket?.toString() === trade.broker1Ticket?.toString());
-          const mt4Match = mt4Data.find(pos => pos.ticket?.toString() === trade.broker1Ticket?.toString());
+      setActiveTrades(prev => {
+        const updatedTrades = prev.map(trade => {
+          let broker1Profit = trade.broker1Profit || 0;
+          let broker2Profit = trade.broker2Profit || 0;
           
-          if (mt5Match) {
-            broker1Profit = parseFloat(mt5Match.profit) || 0;
-            console.log(`✅ Updated broker1 profit from MT5: ${trade.broker1Ticket} = ${broker1Profit}`);
-          } else if (mt4Match) {
-            broker1Profit = parseFloat(mt4Match.profit) || 0;
-            console.log(`✅ Updated broker1 profit from MT4: ${trade.broker1Ticket} = ${broker1Profit}`);
-          }
-        }
-        
-        // For broker2 ticket
-        if (trade.broker2Ticket) {
-          const mt5Match = mt5Data.find(pos => pos.ticket?.toString() === trade.broker2Ticket?.toString());
-          const mt4Match = mt4Data.find(pos => pos.ticket?.toString() === trade.broker2Ticket?.toString());
+          // Find matching positions for this trade based on ticket numbers
+          // We need to check both MT4 and MT5 data for each broker ticket
           
-          if (mt5Match) {
-            broker2Profit = parseFloat(mt5Match.profit) || 0;
-            console.log(`✅ Updated broker2 profit from MT5: ${trade.broker2Ticket} = ${broker2Profit}`);
-          } else if (mt4Match) {
-            broker2Profit = parseFloat(mt4Match.profit) || 0;
-            console.log(`✅ Updated broker2 profit from MT4: ${trade.broker2Ticket} = ${broker2Profit}`);
+          // For broker1 ticket
+          if (trade.broker1Ticket) {
+            const mt5Match = mt5Data.find(pos => pos.ticket?.toString() === trade.broker1Ticket?.toString());
+            const mt4Match = mt4Data.find(pos => pos.ticket?.toString() === trade.broker1Ticket?.toString());
+            
+            if (mt5Match) {
+              broker1Profit = parseFloat(mt5Match.profit) || 0;
+              console.log(`✅ Updated broker1 profit from MT5: ${trade.broker1Ticket} = ${broker1Profit}`);
+            } else if (mt4Match) {
+              broker1Profit = parseFloat(mt4Match.profit) || 0;
+              console.log(`✅ Updated broker1 profit from MT4: ${trade.broker1Ticket} = ${broker1Profit}`);
+            }
           }
-        }
-        
-        const totalProfit = broker1Profit + broker2Profit;
-        
-        return {
-          ...trade,
-          broker1Profit,
-          broker2Profit,
-          totalProfit
-        };
-      }));
-      
-      // Update total P&L
-      setActiveTrades(current => {
-        const newTotal = current.reduce((sum, trade) => sum + (trade.totalProfit || 0), 0);
+          
+          // For broker2 ticket
+          if (trade.broker2Ticket) {
+            const mt5Match = mt5Data.find(pos => pos.ticket?.toString() === trade.broker2Ticket?.toString());
+            const mt4Match = mt4Data.find(pos => pos.ticket?.toString() === trade.broker2Ticket?.toString());
+            
+            if (mt5Match) {
+              broker2Profit = parseFloat(mt5Match.profit) || 0;
+              console.log(`✅ Updated broker2 profit from MT5: ${trade.broker2Ticket} = ${broker2Profit}`);
+            } else if (mt4Match) {
+              broker2Profit = parseFloat(mt4Match.profit) || 0;
+              console.log(`✅ Updated broker2 profit from MT4: ${trade.broker2Ticket} = ${broker2Profit}`);
+            }
+          }
+          
+          const totalProfit = broker1Profit + broker2Profit;
+          
+          return {
+            ...trade,
+            broker1Profit,
+            broker2Profit,
+            totalProfit
+          };
+        });
+
+        // Calculate and update total P&L
+        const newTotal = updatedTrades.reduce((sum, trade) => sum + (trade.totalProfit || 0), 0);
         setTotalPnL(newTotal);
-        return current;
+
+        return updatedTrades;
       });
     });
 
@@ -667,8 +668,8 @@ export default function ActiveTrades() {
                   color: 'white'
                 }}>
                   <tr>
-                    <th style={tableHeaderStyle}>Broker1<br/>(MT4)</th>
-                    <th style={tableHeaderStyle}>Broker2<br/>(MT4)</th>
+                    <th style={tableHeaderStyle}>Broker1<br/>({selectedAccountSet?.brokers?.[0]?.terminal || 'MT4'})</th>
+                    <th style={tableHeaderStyle}>Broker2<br/>({selectedAccountSet?.brokers?.[1]?.terminal || 'MT5'})</th>
                     <th style={tableHeaderStyle}>Direction</th>
                     <th style={tableHeaderStyle}>Lot<br/>Size</th>
                     <th style={tableHeaderStyle}>Broker1<br/>Profit</th>
