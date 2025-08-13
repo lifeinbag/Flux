@@ -1,7 +1,7 @@
 const axios = require('axios');
 const https = require('https');
 // Removed fs - not needed for file logging
-const { ActiveTrade, ClosedTrade, PendingOrder, AccountSet, Broker } = require('../models');
+const { ActiveTrade, ClosedTrade, PendingOrder, AccountSet, Broker, sequelize } = require('../models');
 const latencyMonitor = require('./latencyMonitor');
 const { TokenManager } = require('../token-manager');
 
@@ -254,7 +254,7 @@ class TradingService {
             return await this.continueTradeExecution(
               broker1, broker2, accountSet, direction, volume, comment, 
               futureQuoteFallback, spotQuoteFallback, currentPremiumFallback, 
-              takeProfit, stopLoss, scalpingMode, userId, accountSetId
+              takeProfit, takeProfitMode, stopLoss, scalpingMode, userId, accountSetId
             );
           }
         } catch (fallbackError) {
@@ -275,7 +275,7 @@ class TradingService {
       return await this.continueTradeExecution(
         broker1, broker2, accountSet, direction, volume, comment, 
         futureQuote, spotQuote, currentPremium, 
-        takeProfit, stopLoss, scalpingMode, userId, accountSetId
+        takeProfit, takeProfitMode, stopLoss, scalpingMode, userId, accountSetId
       );
 
     } catch (error) {
@@ -420,30 +420,63 @@ class TradingService {
 
   // Close active trade
   async closeTrade(tradeId, userId, reason = 'Manual') {
+    console.log(`🔄 Starting trade closure for ${tradeId}`);
+    
+    // ✅ FIX: Use database transaction to prevent partial closures
+    const transaction = await sequelize.transaction();
+    
     try {
       const activeTrade = await ActiveTrade.findOne({
         where: { tradeId, userId },
         include: [
           { model: Broker, as: 'broker1' },
           { model: Broker, as: 'broker2' }
-        ]
+        ],
+        transaction
       });
 
       if (!activeTrade) {
         throw new Error('Active trade not found');
       }
 
-      // Close orders on both brokers
-      const closeResults = await Promise.all([
-        this.closeOrderOnBroker(activeTrade.broker1, activeTrade.broker1Ticket),
-        this.closeOrderOnBroker(activeTrade.broker2, activeTrade.broker2Ticket)
-      ]);
+      console.log(`📋 Found trade: Broker1 ticket ${activeTrade.broker1Ticket}, Broker2 ticket ${activeTrade.broker2Ticket}`);
 
-      // Get current quotes for close premium calculation
-      const [futureQuote, spotQuote] = await this.getCurrentQuotes(
+      // ✅ FIX: Close orders sequentially with better error handling
+      let broker1Result = { success: false, error: 'Not executed', profit: 0 };
+      let broker2Result = { success: false, error: 'Not executed', profit: 0 };
+      
+      // Close broker1 order
+      if (activeTrade.broker1Ticket) {
+        console.log(`🔄 Closing Broker1 order ${activeTrade.broker1Ticket}...`);
+        broker1Result = await this.closeOrderOnBroker(activeTrade.broker1, activeTrade.broker1Ticket);
+        console.log(`📊 Broker1 result:`, broker1Result);
+      }
+      
+      // Close broker2 order
+      if (activeTrade.broker2Ticket) {
+        console.log(`🔄 Closing Broker2 order ${activeTrade.broker2Ticket}...`);
+        broker2Result = await this.closeOrderOnBroker(activeTrade.broker2, activeTrade.broker2Ticket);
+        console.log(`📊 Broker2 result:`, broker2Result);
+      }
+
+      const closeResults = [broker1Result, broker2Result];
+      const successCount = closeResults.filter(r => r.success).length;
+      
+      console.log(`✅ Closed ${successCount}/2 positions successfully`);
+
+      // ✅ FIX: Get quotes using cached service to avoid redundant API calls
+      const cachedQuoteService = require('./cachedQuoteService');
+      const quotes = await cachedQuoteService.getQuotes(
         activeTrade.broker1, activeTrade.broker1Symbol,
         activeTrade.broker2, activeTrade.broker2Symbol
       );
+      
+      let futureQuote = null;
+      let spotQuote = null;
+      
+      if (quotes && quotes.length === 2) {
+        [futureQuote, spotQuote] = quotes;
+      }
 
       let closePremium = 0;
       if (futureQuote && spotQuote) {
@@ -459,7 +492,7 @@ class TradingService {
         (Date.now() - new Date(activeTrade.createdAt).getTime()) / (1000 * 60)
       );
 
-      // Create closed trade record
+      // ✅ FIX: Create closed trade record within transaction
       const closedTrade = await ClosedTrade.create({
         tradeId: activeTrade.tradeId,
         accountSetId: activeTrade.accountSetId,
@@ -472,6 +505,7 @@ class TradingService {
         broker1Volume: activeTrade.broker1Volume,
         broker1OpenPrice: activeTrade.broker1OpenPrice,
         broker1ClosePrice: activeTrade.broker1Direction === 'Buy' ? futureQuote?.bid : futureQuote?.ask,
+        broker1CloseTime: new Date(),
         broker1OpenTime: activeTrade.broker1OpenTime,
         broker1Profit: closeResults[0].profit || 0,
         
@@ -482,6 +516,7 @@ class TradingService {
         broker2Volume: activeTrade.broker2Volume,
         broker2OpenPrice: activeTrade.broker2OpenPrice,
         broker2ClosePrice: activeTrade.broker2Direction === 'Buy' ? spotQuote?.bid : spotQuote?.ask,
+        broker2CloseTime: new Date(),
         broker2OpenTime: activeTrade.broker2OpenTime,
         broker2Profit: closeResults[1].profit || 0,
         
@@ -489,6 +524,7 @@ class TradingService {
         closePremium,
         totalProfit: (closeResults[0].profit || 0) + (closeResults[1].profit || 0),
         takeProfit: activeTrade.takeProfit,
+        takeProfitMode: activeTrade.takeProfitMode || 'None',
         stopLoss: activeTrade.stopLoss,
         closeReason: reason,
         tradeDurationMinutes,
@@ -497,18 +533,27 @@ class TradingService {
         broker2Latency: activeTrade.broker2Latency,
         comment: activeTrade.comment,
         scalpingMode: activeTrade.scalpingMode
-      });
+      }, { transaction });
 
-      // Remove from active trades
-      await activeTrade.destroy();
+      // ✅ FIX: Remove from active trades within transaction
+      await activeTrade.destroy({ transaction });
+      
+      // ✅ FIX: Commit transaction
+      await transaction.commit();
+      
+      console.log(`✅ Trade ${tradeId} closed successfully and moved to closed trades`);
 
       return {
         success: true,
         closedTrade,
-        closeResults
+        closeResults,
+        message: `Successfully closed ${successCount}/2 positions`
       };
 
     } catch (error) {
+      await transaction.rollback();
+      console.error(`❌ Failed to close trade ${tradeId}:`, error.message);
+      
       return {
         success: false,
         error: error.message
@@ -543,7 +588,7 @@ class TradingService {
   // Helper method to continue trade execution after quotes are obtained
   async continueTradeExecution(broker1, broker2, accountSet, direction, volume, comment, 
                               futureQuote, spotQuote, currentPremium, 
-                              takeProfit, stopLoss, scalpingMode, userId, accountSetId) {
+                              takeProfit, takeProfitMode, stopLoss, scalpingMode, userId, accountSetId) {
     // Prepare order parameters for both brokers
     const broker1OrderParams = {
       symbol: accountSet.futureSymbol,
@@ -586,93 +631,113 @@ class TradingService {
         console.log('✅ Broker1 succeeded but Broker2 failed - keeping Broker1 trade as partial trade');
         
         // Create a partial ActiveTrade record for the successful broker1 trade
-        const partialTrade = await ActiveTrade.create({
-          accountSetId,
-          userId,
-          broker1Id: broker1.id,
-          broker1Ticket: broker1Result.ticket,
-          broker1Symbol: accountSet.futureSymbol,
-          broker1Direction: direction,
-          broker1Volume: volume,
-          broker1OpenPrice: direction === 'Buy' ? futureQuote.ask : futureQuote.bid,
-          broker1Latency: broker1Result.latency,
+        const transaction1 = await sequelize.transaction();
+        try {
+          const partialTrade = await ActiveTrade.create({
+            accountSetId,
+            userId,
+            broker1Id: broker1.id,
+            broker1Ticket: broker1Result.ticket,
+            broker1Symbol: accountSet.futureSymbol,
+            broker1Direction: direction,
+            broker1Volume: volume,
+            broker1OpenPrice: direction === 'Buy' ? futureQuote.ask : futureQuote.bid,
+            broker1Latency: broker1Result.latency,
+            
+            // Broker2 fields are null/empty since it failed
+            broker2Id: null,
+            broker2Ticket: null,
+            broker2Symbol: null,
+            broker2Direction: null,
+            broker2Volume: null,
+            broker2OpenPrice: null,
+            broker2Latency: null,
+            
+            executionPremium: currentPremium,
+            takeProfit,
+            takeProfitMode: takeProfitMode || 'None',
+            stopLoss,
+            scalpingMode,
+            comment: `${comment} - PARTIAL: Broker2 failed (${broker2Result.error})`,
+            status: 'PartiallyFilled' // Status for partial trades
+          }, { transaction: transaction1 });
           
-          // Broker2 fields are null/empty since it failed
-          broker2Id: null,
-          broker2Ticket: null,
-          broker2Symbol: null,
-          broker2Direction: null,
-          broker2Volume: null,
-          broker2OpenPrice: null,
-          broker2Latency: null,
+          await transaction1.commit();
           
-          executionPremium: currentPremium,
-          takeProfit,
-          stopLoss,
-          scalpingMode,
-          comment: `${comment} - PARTIAL: Broker2 failed (${broker2Result.error})`,
-          status: 'Partial' // New status for partial trades
-        });
-        
-        return {
-          success: true,
-          trade: partialTrade,
-          executionDetails: {
-            broker1: broker1Result,
-            broker2: broker2Result,
-            premium: currentPremium,
-            futureQuote,
-            spotQuote,
-            warning: 'Partial execution - only Broker1 succeeded'
-          }
-        };
+          return {
+            success: true,
+            trade: partialTrade,
+            executionDetails: {
+              broker1: broker1Result,
+              broker2: broker2Result,
+              premium: currentPremium,
+              futureQuote,
+              spotQuote,
+              warning: 'Partial execution - only Broker1 succeeded'
+            }
+          };
+        } catch (transactionError) {
+          await transaction1.rollback();
+          console.error('❌ Failed to create partial trade for Broker1:', transactionError);
+          throw new Error(`Failed to save partial trade data: ${transactionError.message}`);
+        }
       }
       
       if (broker2Result.success && broker2Result.ticket && !broker1Result.success) {
         console.log('✅ Broker2 succeeded but Broker1 failed - keeping Broker2 trade as partial trade');
         
         // Create a partial ActiveTrade record for the successful broker2 trade
-        const partialTrade = await ActiveTrade.create({
-          accountSetId,
-          userId,
+        const transaction2 = await sequelize.transaction();
+        try {
+          const partialTrade = await ActiveTrade.create({
+            accountSetId,
+            userId,
+            
+            // Broker1 fields are null/empty since it failed
+            broker1Id: null,
+            broker1Ticket: null,
+            broker1Symbol: null,
+            broker1Direction: null,
+            broker1Volume: null,
+            broker1OpenPrice: null,
+            broker1Latency: null,
+            
+            broker2Id: broker2.id,
+            broker2Ticket: broker2Result.ticket,
+            broker2Symbol: accountSet.spotSymbol,
+            broker2Direction: this.getReverseDirection(direction),
+            broker2Volume: volume,
+            broker2OpenPrice: this.getReverseDirection(direction) === 'Buy' ? spotQuote.ask : spotQuote.bid,
+            broker2Latency: broker2Result.latency,
+            
+            executionPremium: currentPremium,
+            takeProfit,
+            takeProfitMode: takeProfitMode || 'None',
+            stopLoss,
+            scalpingMode,
+            comment: `${comment} - PARTIAL: Broker1 failed (${broker1Result.error})`,
+            status: 'PartiallyFilled' // Status for partial trades
+          }, { transaction: transaction2 });
           
-          // Broker1 fields are null/empty since it failed
-          broker1Id: null,
-          broker1Ticket: null,
-          broker1Symbol: null,
-          broker1Direction: null,
-          broker1Volume: null,
-          broker1OpenPrice: null,
-          broker1Latency: null,
+          await transaction2.commit();
           
-          broker2Id: broker2.id,
-          broker2Ticket: broker2Result.ticket,
-          broker2Symbol: accountSet.spotSymbol,
-          broker2Direction: this.getReverseDirection(direction),
-          broker2Volume: volume,
-          broker2OpenPrice: this.getReverseDirection(direction) === 'Buy' ? spotQuote.ask : spotQuote.bid,
-          broker2Latency: broker2Result.latency,
-          
-          executionPremium: currentPremium,
-          takeProfit,
-          stopLoss,
-          scalpingMode,
-          comment: `${comment} - PARTIAL: Broker1 failed (${broker1Result.error})`,
-          status: 'Partial' // New status for partial trades
-        });
-        
-        return {
-          success: true,
-          trade: partialTrade,
-          executionDetails: {
-            broker1: broker1Result,
-            broker2: broker2Result,
-            premium: currentPremium,
-            futureQuote,
-            spotQuote,
-            warning: 'Partial execution - only Broker2 succeeded'
-          }
-        };
+          return {
+            success: true,
+            trade: partialTrade,
+            executionDetails: {
+              broker1: broker1Result,
+              broker2: broker2Result,
+              premium: currentPremium,
+              futureQuote,
+              spotQuote,
+              warning: 'Partial execution - only Broker2 succeeded'
+            }
+          };
+        } catch (transactionError) {
+          await transaction2.rollback();
+          console.error('❌ Failed to create partial trade for Broker2:', transactionError);
+          throw new Error(`Failed to save partial trade data: ${transactionError.message}`);
+        }
       }
 
       // Both failed - throw error
@@ -688,62 +753,76 @@ class TradingService {
     
     console.log('✅ Both brokers executed successfully, creating ActiveTrade record');
     
-    // Create ActiveTrade record
-    const activeTrade = await ActiveTrade.create({
-      accountSetId,
-      userId,
-      broker1Id: broker1.id,
-      broker1Ticket: broker1Result.ticket,
-      broker1Symbol: accountSet.futureSymbol,
-      broker1Direction: direction,
-      broker1Volume: volume,
-      broker1OpenPrice: direction === 'Buy' ? futureQuote.ask : futureQuote.bid,
-      broker1Latency: broker1Result.latency,
-      
-      broker2Id: broker2.id,
-      broker2Ticket: broker2Result.ticket,
-      broker2Symbol: accountSet.spotSymbol,
-      broker2Direction: this.getReverseDirection(direction),
-      broker2Volume: volume,
-      broker2OpenPrice: this.getReverseDirection(direction) === 'Buy' ? spotQuote.ask : spotQuote.bid,
-      broker2Latency: broker2Result.latency,
-      
-      executionPremium: currentPremium,
-      takeProfit,
-      takeProfitMode,
-      stopLoss,
-      scalpingMode,
-      comment: comment,
-      status: 'Active'
-    });
+    // ✅ FIX: Use database transaction to ensure data consistency
+    const transaction = await sequelize.transaction();
     
-    console.log('✅ ActiveTrade created successfully:', {
-      tradeId: activeTrade.tradeId,
-      broker1Ticket: broker1Result.ticket,
-      broker2Ticket: broker2Result.ticket,
-      broker1Direction: direction,
-      broker2Direction: this.getReverseDirection(direction),
-      executionPremium: currentPremium
-    });
+    try {
+      // Create ActiveTrade record within transaction
+      const activeTrade = await ActiveTrade.create({
+        accountSetId,
+        userId,
+        broker1Id: broker1.id,
+        broker1Ticket: broker1Result.ticket,
+        broker1Symbol: accountSet.futureSymbol,
+        broker1Direction: direction,
+        broker1Volume: volume,
+        broker1OpenPrice: direction === 'Buy' ? futureQuote.ask : futureQuote.bid,
+        broker1Latency: broker1Result.latency,
+        
+        broker2Id: broker2.id,
+        broker2Ticket: broker2Result.ticket,
+        broker2Symbol: accountSet.spotSymbol,
+        broker2Direction: this.getReverseDirection(direction),
+        broker2Volume: volume,
+        broker2OpenPrice: this.getReverseDirection(direction) === 'Buy' ? spotQuote.ask : spotQuote.bid,
+        broker2Latency: broker2Result.latency,
+        
+        executionPremium: currentPremium,
+        takeProfit,
+        takeProfitMode,
+        stopLoss,
+        scalpingMode,
+        comment: comment,
+        status: 'Active'
+      }, { transaction });
+      
+      console.log('✅ ActiveTrade created successfully:', {
+        tradeId: activeTrade.tradeId,
+        broker1Ticket: broker1Result.ticket,
+        broker2Ticket: broker2Result.ticket,
+        broker1Direction: direction,
+        broker2Direction: this.getReverseDirection(direction),
+        executionPremium: currentPremium
+      });
 
-    // Store latency data in AccountSet for persistence
-    await accountSet.update({
-      lastOrderBroker1Latency: broker1Result.latency,
-      lastOrderBroker2Latency: broker2Result.latency,
-      lastOrderTimestamp: new Date()
-    });
-
-    return {
-      success: true,
-      trade: activeTrade,
-      executionDetails: {
-        broker1: broker1Result,
-        broker2: broker2Result,
-        premium: currentPremium,
-        futureQuote,
-        spotQuote
-      }
-    };
+      // Store latency data in AccountSet for persistence within transaction
+      await accountSet.update({
+        lastOrderBroker1Latency: broker1Result.latency,
+        lastOrderBroker2Latency: broker2Result.latency,
+        lastOrderTimestamp: new Date()
+      }, { transaction });
+      
+      // ✅ FIX: Commit transaction to ensure immediate database consistency
+      await transaction.commit();
+      console.log('✅ Database transaction committed successfully');
+      
+      return {
+        success: true,
+        trade: activeTrade,
+        executionDetails: {
+          broker1: broker1Result,
+          broker2: broker2Result,
+          premium: currentPremium,
+          futureQuote,
+          spotQuote
+        }
+      };
+      
+    } catch (transactionError) {
+      await transaction.rollback();
+      console.error('❌ Database transaction failed, rolling back:', transactionError);
+      throw new Error(`Failed to save trade data: ${transactionError.message}`);
+    }
   }
 
   // Fetch all open orders for an account set

@@ -1046,7 +1046,19 @@ router.get('/pending-orders', async (req, res) => {
     const { accountSetId } = req.query;
     const userId = req.user.id;
     
-    let whereClause = { userId, status: 'Pending' };
+    // Allow filtering by status, default to 'Pending' for backward compatibility
+    const statusFilter = req.query.status || 'Pending';
+    const validStatuses = ['Pending', 'Filled', 'Cancelled', 'Expired', 'Error'];
+    
+    let whereClause = { userId };
+    if (statusFilter === 'all') {
+      // Show all statuses
+    } else if (validStatuses.includes(statusFilter)) {
+      whereClause.status = statusFilter;
+    } else {
+      whereClause.status = 'Pending'; // Default fallback
+    }
+    
     if (accountSetId) {
       whereClause.accountSetId = accountSetId;
     }
@@ -1483,12 +1495,29 @@ router.get('/debug-active-trades', async (req, res) => {
       raw: true
     });
 
+    // Get the most recent 5 trades for detailed analysis
+    const recentTrades = allActiveTrades.slice(0, 5).map(t => ({
+      tradeId: t.tradeId,
+      status: t.status,
+      createdAt: t.createdAt,
+      broker1Ticket: t.broker1Ticket,
+      broker2Ticket: t.broker2Ticket,
+      accountSetId: t.accountSetId,
+      broker1Symbol: t.broker1Symbol,
+      broker2Symbol: t.broker2Symbol,
+      direction: t.direction,
+      volume: t.volume
+    }));
+
     res.json({
       success: true,
       debug: {
         totalTradesInActiveTable: allActiveTrades.length,
         statusBreakdown: statusCounts,
-        allTrades: allActiveTrades
+        recentTrades,
+        queryTime: new Date().toISOString(),
+        userId: req.user.id,
+        accountSetFilter: accountSetId || 'None'
       }
     });
   } catch (error) {

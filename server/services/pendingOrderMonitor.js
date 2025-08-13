@@ -1,5 +1,6 @@
 const { PendingOrder, AccountSet, Broker } = require('../models');
 const tradingService = require('./tradingService');
+const cachedQuoteService = require('./cachedQuoteService');
 
 class PendingOrderMonitor {
   constructor() {
@@ -115,14 +116,21 @@ class PendingOrderMonitor {
         return;
       }
 
-      // Get current quotes
-      const [futureQuote, spotQuote] = await tradingService.getCurrentQuotes(
+      // ✅ FIX: Use cached quotes instead of fresh API calls
+      const quotes = await cachedQuoteService.getQuotes(
         broker1, order.broker1Symbol,
         broker2, order.broker2Symbol
       );
 
-      if (!futureQuote || !spotQuote) {
-        this.recordError(order, 'Unable to get current quotes');
+      if (!quotes || quotes.length !== 2) {
+        this.recordError(order, 'Unable to get current quotes from cache or API');
+        return;
+      }
+
+      const [futureQuote, spotQuote] = quotes;
+      
+      if (!futureQuote || !spotQuote || futureQuote.bid === 0 || spotQuote.bid === 0) {
+        this.recordError(order, 'Invalid quote data received');
         return;
       }
 
