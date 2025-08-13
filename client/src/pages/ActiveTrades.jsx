@@ -195,31 +195,41 @@ export default function ActiveTrades() {
           // Find matching positions for this trade based on ticket numbers
           // We need to check both MT4 and MT5 data for each broker ticket
           
-          // For broker1 ticket
+          // For broker1 ticket - prefer matching by broker position first
           if (trade.broker1Ticket) {
-            const mt5Match = mt5Data.find(pos => pos.ticket?.toString() === trade.broker1Ticket?.toString());
-            const mt4Match = mt4Data.find(pos => pos.ticket?.toString() === trade.broker1Ticket?.toString());
+            // Try to match by broker position first (more accurate for same terminal types)
+            let mt5Match = mt5Data.find(pos => pos.ticket?.toString() === trade.broker1Ticket?.toString() && pos.brokerPosition === 1);
+            let mt4Match = mt4Data.find(pos => pos.ticket?.toString() === trade.broker1Ticket?.toString() && pos.brokerPosition === 1);
+            
+            // Fallback to ticket-only matching if position matching fails
+            if (!mt5Match) mt5Match = mt5Data.find(pos => pos.ticket?.toString() === trade.broker1Ticket?.toString());
+            if (!mt4Match) mt4Match = mt4Data.find(pos => pos.ticket?.toString() === trade.broker1Ticket?.toString());
             
             if (mt5Match) {
               broker1Profit = parseFloat(mt5Match.profit) || 0;
-              console.log(`✅ Updated broker1 profit from MT5: ${trade.broker1Ticket} = ${broker1Profit}`);
+              console.log(`✅ Updated broker1 profit from MT5: ${trade.broker1Ticket} = ${broker1Profit} (position: ${mt5Match.brokerPosition || 'unknown'})`);
             } else if (mt4Match) {
               broker1Profit = parseFloat(mt4Match.profit) || 0;
-              console.log(`✅ Updated broker1 profit from MT4: ${trade.broker1Ticket} = ${broker1Profit}`);
+              console.log(`✅ Updated broker1 profit from MT4: ${trade.broker1Ticket} = ${broker1Profit} (position: ${mt4Match.brokerPosition || 'unknown'})`);
             }
           }
           
-          // For broker2 ticket
+          // For broker2 ticket - prefer matching by broker position first
           if (trade.broker2Ticket) {
-            const mt5Match = mt5Data.find(pos => pos.ticket?.toString() === trade.broker2Ticket?.toString());
-            const mt4Match = mt4Data.find(pos => pos.ticket?.toString() === trade.broker2Ticket?.toString());
+            // Try to match by broker position first (more accurate for same terminal types)
+            let mt5Match = mt5Data.find(pos => pos.ticket?.toString() === trade.broker2Ticket?.toString() && pos.brokerPosition === 2);
+            let mt4Match = mt4Data.find(pos => pos.ticket?.toString() === trade.broker2Ticket?.toString() && pos.brokerPosition === 2);
+            
+            // Fallback to ticket-only matching if position matching fails
+            if (!mt5Match) mt5Match = mt5Data.find(pos => pos.ticket?.toString() === trade.broker2Ticket?.toString());
+            if (!mt4Match) mt4Match = mt4Data.find(pos => pos.ticket?.toString() === trade.broker2Ticket?.toString());
             
             if (mt5Match) {
               broker2Profit = parseFloat(mt5Match.profit) || 0;
-              console.log(`✅ Updated broker2 profit from MT5: ${trade.broker2Ticket} = ${broker2Profit}`);
+              console.log(`✅ Updated broker2 profit from MT5: ${trade.broker2Ticket} = ${broker2Profit} (position: ${mt5Match.brokerPosition || 'unknown'})`);
             } else if (mt4Match) {
               broker2Profit = parseFloat(mt4Match.profit) || 0;
-              console.log(`✅ Updated broker2 profit from MT4: ${trade.broker2Ticket} = ${broker2Profit}`);
+              console.log(`✅ Updated broker2 profit from MT4: ${trade.broker2Ticket} = ${broker2Profit} (position: ${mt4Match.brokerPosition || 'unknown'})`);
             }
           }
           

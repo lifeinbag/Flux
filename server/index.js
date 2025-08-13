@@ -947,29 +947,39 @@ async function handleSubscribePositions(ws, msg) {
           ...trade,
           profit: parseFloat(trade.profit) || 0,
           swap: parseFloat(trade.swap) || 0,
-          ticket: trade.ticket?.toString()
+          ticket: trade.ticket?.toString(),
+          brokerPosition: 1  // Add broker position identifier
         }));
 
         broker2Data = broker2Data.filter(Boolean).map(trade => ({
           ...trade,
           profit: parseFloat(trade.profit) || 0,
           swap: parseFloat(trade.swap) || 0,
-          ticket: trade.ticket?.toString()
+          ticket: trade.ticket?.toString(),
+          brokerPosition: 2  // Add broker position identifier
         }));
 
-        // Broadcast the positions update
+        // ✅ FIXED: Combine data properly for same terminal types
         ws.send(JSON.stringify({
           type: 'positions_update',
           data: { 
             accountSetId, 
-            mt5Data: broker1.terminal === 'MT5' ? broker1Data : (broker2.terminal === 'MT5' ? broker2Data : []),
-            mt4Data: broker1.terminal === 'MT4' ? broker1Data : (broker2.terminal === 'MT4' ? broker2Data : []),
+            mt5Data: [
+              ...(broker1.terminal === 'MT5' ? broker1Data : []),
+              ...(broker2.terminal === 'MT5' ? broker2Data : [])
+            ],
+            mt4Data: [
+              ...(broker1.terminal === 'MT4' ? broker1Data : []),
+              ...(broker2.terminal === 'MT4' ? broker2Data : [])
+            ],
             timestamp: new Date()
           }
         }));
         
-        const mt5Count = broker1.terminal === 'MT5' ? broker1Data.length : (broker2.terminal === 'MT5' ? broker2Data.length : 0);
-        const mt4Count = broker1.terminal === 'MT4' ? broker1Data.length : (broker2.terminal === 'MT4' ? broker2Data.length : 0);
+        const mt5Count = (broker1.terminal === 'MT5' ? broker1Data.length : 0) + 
+                        (broker2.terminal === 'MT5' ? broker2Data.length : 0);
+        const mt4Count = (broker1.terminal === 'MT4' ? broker1Data.length : 0) + 
+                        (broker2.terminal === 'MT4' ? broker2Data.length : 0);
         console.log(`✅ Sent positions update for ${accountSetId}: MT5=${mt5Count}, MT4=${mt4Count}`);
         
       } catch (err) {
