@@ -239,16 +239,60 @@ const TokenManager = {
     }
   },
 
-  // ✅ FIXED: Enhanced token fetching with better error handling
+  // ✅ FIXED: Enhanced token fetching with optimized ConnectEx-first flow
   async _fetchTokenSimplified(client, serverName, account, password) {
     console.log(`🔄 Fetching token for ${serverName} account ${account}...`);
     
-    // Method 1: Search and connect (primary method)
+    // Method 1: Try ConnectEx directly first (no search needed)
     try {
-      console.log(`🔍 Searching for access points for ${serverName}...`);
+      console.log(`📡 Trying ConnectEx directly for ${serverName}...`);
+      const connectResponse = await client.get('/ConnectEx', {
+        params: {
+          user: account,
+          password: password,
+          server: serverName
+        },
+        timeout: 20000
+      });
+      
+      // ✅ Validate response
+      if (connectResponse.data && typeof connectResponse.data === 'string') {
+        const data = connectResponse.data.trim();
+        
+        if (data.includes('[error]') || 
+            data.includes('Resource temporarily unavailable') ||
+            data.includes('Invalid account') ||
+            data.includes('Wrong password')) {
+          throw new Error(`Broker server error: ${data}`);
+        }
+        
+        if (data.length > 10 && !data.includes('error')) {
+          console.log(`✅ ConnectEx successful for ${serverName}`);
+          return {
+            token: data,
+            hostPort: null // ConnectEx doesn't provide specific host:port
+          };
+        }
+      }
+      
+      throw new Error('Invalid or empty response from ConnectEx');
+      
+    } catch (connectExError) {
+      console.log(`⚠️ ConnectEx failed for ${serverName}: ${connectExError.message}`);
+      
+      // Don't try fallback on authentication errors
+      if (connectExError.message.includes('Invalid account') || 
+          connectExError.message.includes('Wrong password')) {
+        throw new TokenError(`Authentication failed: ${connectExError.message}`);
+      }
+    }
+    
+    // Method 2: Fallback to search and connect (legacy method)
+    try {
+      console.log(`🔍 Fallback: Searching for access points for ${serverName}...`);
       const searchResponse = await client.get('/Search', {
         params: { company: serverName },
-        timeout: 15000 // ✅ FIXED: Increased search timeout
+        timeout: 15000
       });
       
       const searchData = searchResponse.data;
@@ -264,34 +308,19 @@ const TokenManager = {
           for (let attempt = 1; attempt <= 2; attempt++) {
             try {
               const [host, port = '443'] = accessPoint.split(':');
-              console.log(`📡 Trying connection to ${host}:${port} (attempt ${attempt})...`);
+              console.log(`📡 Trying Connect to ${host}:${port} (attempt ${attempt})...`);
               
-              let connectResponse;
-              try {
-                // Primary: Try ConnectEx first
-                connectResponse = await client.get('/ConnectEx', {
-                  params: {
-                    user: account,
-                    password: password,
-                    server: serverName
-                  },
-                  timeout: 20000 // ✅ FIXED: Increased connection timeout
-                });
-              } catch (connectExError) {
-                // Fallback: Try original Connect endpoint
-                console.log(`ConnectEx failed, falling back to Connect: ${connectExError.message}`);
-                connectResponse = await client.get('/Connect', {
-                  params: {
-                    user: account,
-                    password: password,
-                    host: host.trim(),
-                    port: port.trim()
-                  },
-                  timeout: 20000
-                });
-              }
+              const connectResponse = await client.get('/Connect', {
+                params: {
+                  user: account,
+                  password: password,
+                  host: host.trim(),
+                  port: port.trim()
+                },
+                timeout: 20000
+              });
               
-              // ✅ FIXED: Better response validation
+              // ✅ Validate response
               if (connectResponse.data && typeof connectResponse.data === 'string') {
                 const data = connectResponse.data.trim();
                 
@@ -303,7 +332,7 @@ const TokenManager = {
                 }
                 
                 if (data.length > 10 && !data.includes('error')) {
-                  console.log(`✅ Connection successful to ${host}:${port}`);
+                  console.log(`✅ Connect successful to ${host}:${port}`);
                   return {
                     token: data,
                     hostPort: { host: host.trim(), port: Number(port.trim()) || 443 }
@@ -311,7 +340,7 @@ const TokenManager = {
                 }
               }
               
-              throw new Error('Invalid or empty response from broker');
+              throw new Error('Invalid or empty response from Connect');
               
             } catch (connectError) {
               console.log(`⚠️ Failed to connect to ${accessPoint} (attempt ${attempt}): ${connectError.message}`);
@@ -331,14 +360,12 @@ const TokenManager = {
         }
       }
     } catch (searchError) {
-      console.log(`⚠️ Search method failed for ${serverName}: ${searchError.message}`);
+      console.log(`⚠️ Search fallback method failed for ${serverName}: ${searchError.message}`);
     }
-    // Removed direct connection fallback. If search method fails or no access points
-    // result in a successful connection, the final error below will be thrown.
 
-    // ✅ FIXED: Better error categorization and messaging
+    // ✅ Both methods failed
     throw new TokenError(
-      `Failed to connect to ${serverName} after multiple attempts. Please check:\n` +
+      `Failed to connect to ${serverName} using both ConnectEx and Connect methods. Please check:\n` +
       `• Server name: "${serverName}" is correct\n` +
       `• Account ${account} credentials are valid\n` +
       `• Broker server is online and accessible\n` +
