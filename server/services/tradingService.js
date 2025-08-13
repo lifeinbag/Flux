@@ -165,6 +165,7 @@ class TradingService {
       direction,
       volume,
       takeProfit,
+      takeProfitMode = 'None',
       stopLoss,
       scalpingMode = false,
       comment = 'FluxNetwork Trade'
@@ -294,6 +295,7 @@ class TradingService {
       volume,
       targetPremium,
       takeProfit,
+      takeProfitMode = 'None',
       stopLoss,
       scalpingMode = false,
       comment = 'FluxNetwork Target Order'
@@ -336,6 +338,7 @@ class TradingService {
         volume,
         targetPremium,
         takeProfit,
+        takeProfitMode,
         stopLoss,
         scalpingMode,
         comment,
@@ -707,6 +710,7 @@ class TradingService {
       
       executionPremium: currentPremium,
       takeProfit,
+      takeProfitMode,
       stopLoss,
       scalpingMode,
       comment: comment,
@@ -740,6 +744,85 @@ class TradingService {
         spotQuote
       }
     };
+  }
+
+  // Fetch all open orders for an account set
+  async fetchAllOpenOrders(accountSetId) {
+    try {
+      console.log('🔍 Fetching all open orders for account set:', accountSetId);
+
+      // Get account set with brokers
+      const accountSet = await AccountSet.findByPk(accountSetId, {
+        include: [{
+          model: Broker,
+          as: 'brokers',
+          order: [['position', 'ASC']]
+        }]
+      });
+
+      if (!accountSet || !accountSet.brokers || accountSet.brokers.length === 0) {
+        console.log('⚠️ No account set or brokers found for:', accountSetId);
+        return [];
+      }
+
+      const allOrders = [];
+
+      // Fetch orders from each broker
+      for (const broker of accountSet.brokers) {
+        try {
+          const client = broker.terminal === 'MT5' ? mt5Client : mt4Client;
+          const token = await this.getValidBrokerToken(broker);
+
+          console.log(`📡 Fetching orders from ${broker.terminal} broker ${broker.id}`);
+
+          const response = await client.get('/OpenedOrders', {
+            params: { id: token },
+            timeout: 10000
+          });
+
+          let orders = response.data || [];
+          
+          // Ensure orders is an array
+          if (!Array.isArray(orders)) {
+            orders = orders ? [orders] : [];
+          }
+
+          // Enrich each order with broker information
+          const enrichedOrders = orders.map(order => ({
+            ...order,
+            brokerId: broker.id,
+            brokerName: broker.name,
+            brokerPosition: broker.position,
+            terminal: broker.terminal,
+            accountNumber: broker.accountNumber,
+            // Normalize common fields
+            ticket: order.ticket || order.order || order.ticketNumber || order.id,
+            symbol: order.symbol,
+            type: order.type || order.orderType || order.cmd,
+            lots: order.lots || order.volume || order.volumeSize,
+            openPrice: order.openPrice || order.price || order.open_price,
+            openTime: order.openTime || order.open_time || order.time,
+            profit: order.profit || 0,
+            swap: order.swap || 0,
+            commission: order.commission || 0
+          }));
+
+          allOrders.push(...enrichedOrders);
+          console.log(`✅ Found ${enrichedOrders.length} orders from broker ${broker.id}`);
+
+        } catch (brokerError) {
+          console.error(`❌ Error fetching orders from broker ${broker.id}:`, brokerError.message);
+          // Continue with other brokers even if one fails
+        }
+      }
+
+      console.log(`📦 Total orders found: ${allOrders.length}`);
+      return allOrders;
+
+    } catch (error) {
+      console.error('❌ Error in fetchAllOpenOrders:', error.message);
+      return [];
+    }
   }
 }
 

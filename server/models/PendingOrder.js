@@ -87,6 +87,12 @@ const PendingOrder = sequelize.define('PendingOrder', {
     allowNull: true,
     comment: 'Take profit level'
   },
+  takeProfitMode: {
+    type: DataTypes.ENUM('None', 'Premium', 'Amount'),
+    defaultValue: 'None',
+    allowNull: false,
+    comment: 'Take profit mode: None, Premium (deficit premium target), or Amount (dollar amount target)'
+  },
   stopLoss: {
     type: DataTypes.DECIMAL(10, 5),
     allowNull: true,

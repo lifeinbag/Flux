@@ -120,6 +120,23 @@ class TradeStatusMonitor {
           } catch (error) {
             logger.error(`Failed to move trade ${trade.tradeId} to closed:`, error);
           }
+        } else if (mt5Open && mt4Open && trade.takeProfit && trade.takeProfitMode !== 'None') {
+          // Check if take profit conditions are met
+          try {
+            logger.info(`Checking TP conditions for trade ${trade.tradeId} - Mode: ${trade.takeProfitMode}, Target: ${trade.takeProfit}`);
+            const shouldTriggerTP = await this.checkTakeProfitCondition(trade, mt5Positions, mt4Positions);
+            logger.info(`TP check result for trade ${trade.tradeId}: ${shouldTriggerTP ? 'SHOULD TRIGGER' : 'NOT YET'}`);
+            
+            if (shouldTriggerTP) {
+              logger.info(`🎯 Take profit triggered for trade ${trade.tradeId}, closing positions`);
+              await this.executeTakeProfit(trade);
+              movedCount++;
+            }
+          } catch (error) {
+            logger.error(`Error checking/executing take profit for trade ${trade.tradeId}:`, error);
+          }
+        } else if (trade.takeProfit && trade.takeProfitMode !== 'None') {
+          logger.info(`Trade ${trade.tradeId} has TP set but positions not both open - MT5: ${mt5Open}, MT4: ${mt4Open}`);
         }
       }
 
@@ -296,6 +313,7 @@ class TradeStatusMonitor {
         executionPremium: activeTrade.executionPremium,
         closePremium: activeTrade.executionPremium, // Use execution premium as close premium if not available
         takeProfit: activeTrade.takeProfit,
+        takeProfitMode: activeTrade.takeProfitMode || 'None',
         stopLoss: activeTrade.stopLoss,
         broker1Latency: activeTrade.broker1Latency,
         broker2Latency: activeTrade.broker2Latency,
@@ -315,6 +333,287 @@ class TradeStatusMonitor {
       
     } catch (error) {
       await transaction.rollback();
+      throw error;
+    }
+  }
+
+  // Check if take profit conditions are met
+  async checkTakeProfitCondition(trade, mt5Positions, mt4Positions) {
+    try {
+      const takeProfitValue = parseFloat(trade.takeProfit);
+      logger.info(`TP Check - Trade ${trade.tradeId}: Mode=${trade.takeProfitMode}, Target=${takeProfitValue}`);
+      
+      if (trade.takeProfitMode === 'Premium') {
+        // For premium mode: check deficit premium against target
+        const currentPremium = await this.getCurrentPremiumForTrade(trade);
+        if (currentPremium === null) {
+          logger.warn(`TP Check - Trade ${trade.tradeId}: Could not get current premium`);
+          return false;
+        }
+        
+        const executionPremium = parseFloat(trade.executionPremium);
+        const deficitPremium = executionPremium - currentPremium;
+        logger.info(`TP Check - Trade ${trade.tradeId}: ExecutionPremium=${executionPremium}, CurrentPremium=${currentPremium}, DeficitPremium=${deficitPremium}`);
+        
+        const shouldTrigger = deficitPremium >= takeProfitValue;
+        logger.info(`TP Check - Trade ${trade.tradeId}: DeficitPremium ${deficitPremium} ${shouldTrigger ? '>=' : '<'} Target ${takeProfitValue} = ${shouldTrigger ? 'TRIGGER' : 'WAIT'}`);
+        return shouldTrigger;
+        
+      } else if (trade.takeProfitMode === 'Amount') {
+        // For amount mode: check total profit against target dollar amount
+        const currentProfit = this.calculateCurrentProfit(trade, mt5Positions, mt4Positions);
+        logger.info(`TP Check - Trade ${trade.tradeId}: CurrentProfit=${currentProfit}, Target=${takeProfitValue}`);
+        
+        const shouldTrigger = currentProfit >= takeProfitValue;
+        logger.info(`TP Check - Trade ${trade.tradeId}: CurrentProfit ${currentProfit} ${shouldTrigger ? '>=' : '<'} Target ${takeProfitValue} = ${shouldTrigger ? 'TRIGGER' : 'WAIT'}`);
+        return shouldTrigger;
+      }
+      
+      return false;
+    } catch (error) {
+      logger.error(`Error checking TP condition for trade ${trade.tradeId}:`, error);
+      return false;
+    }
+  }
+
+  // Get current premium for a trade
+  async getCurrentPremiumForTrade(trade) {
+    try {
+      // Fetch current quotes for both symbols
+      const broker1Token = await this.getValidToken(trade.broker1, trade.broker1?.terminal === 'MT5');
+      const broker2Token = await this.getValidToken(trade.broker2, trade.broker2?.terminal === 'MT5');
+      
+      // Get quotes
+      const broker1ApiUrl = trade.broker1?.terminal === 'MT4' ? 
+        'https://mt4.premiumprofit.live' : 'https://mt5.premiumprofit.live';
+      const broker2ApiUrl = trade.broker2?.terminal === 'MT4' ? 
+        'https://mt4.premiumprofit.live' : 'https://mt5.premiumprofit.live';
+      
+      const [futureQuote, spotQuote] = await Promise.all([
+        axios.get(`${broker1ApiUrl}/GetQuote`, {
+          params: { id: broker1Token, symbol: trade.broker1Symbol }
+        }),
+        axios.get(`${broker2ApiUrl}/GetQuote`, {
+          params: { id: broker2Token, symbol: trade.broker2Symbol }
+        })
+      ]);
+      
+      const futureBid = parseFloat(futureQuote.data.bid);
+      const futureAsk = parseFloat(futureQuote.data.ask);
+      const spotBid = parseFloat(spotQuote.data.bid);
+      const spotAsk = parseFloat(spotQuote.data.ask);
+      
+      // Calculate premium based on broker1Direction
+      let premium;
+      if (trade.broker1Direction === 'Buy') {
+        // If broker1 is buying future, we compare future ask with spot bid
+        premium = futureAsk - spotBid;
+      } else {
+        // If broker1 is selling future, we compare future bid with spot ask
+        premium = futureBid - spotAsk;
+      }
+      
+      return premium;
+      
+    } catch (error) {
+      logger.error(`Error getting current premium for trade ${trade.tradeId}:`, error);
+      return null;
+    }
+  }
+
+  // Calculate current total profit from MT4/MT5 positions
+  calculateCurrentProfit(trade, mt5Positions, mt4Positions) {
+    let totalProfit = 0;
+
+    // Find broker1 profit
+    const broker1IsMT5 = trade.broker1?.terminal === 'MT5';
+    const broker1Positions = broker1IsMT5 ? mt5Positions : mt4Positions;
+    const broker1Position = broker1Positions.find(pos => pos.ticket?.toString() === trade.broker1Ticket);
+    let broker1Profit = 0;
+    if (broker1Position) {
+      broker1Profit = parseFloat(broker1Position.profit || 0);
+      totalProfit += broker1Profit;
+      logger.info(`Profit Calc - Trade ${trade.tradeId}: Broker1 (${trade.broker1?.terminal}) Ticket ${trade.broker1Ticket} = $${broker1Profit}`);
+    } else {
+      logger.warn(`Profit Calc - Trade ${trade.tradeId}: Broker1 position with ticket ${trade.broker1Ticket} not found in ${trade.broker1?.terminal} positions`);
+    }
+
+    // Find broker2 profit
+    const broker2IsMT5 = trade.broker2?.terminal === 'MT5';
+    const broker2Positions = broker2IsMT5 ? mt5Positions : mt4Positions;
+    const broker2Position = broker2Positions.find(pos => pos.ticket?.toString() === trade.broker2Ticket);
+    let broker2Profit = 0;
+    if (broker2Position) {
+      broker2Profit = parseFloat(broker2Position.profit || 0);
+      totalProfit += broker2Profit;
+      logger.info(`Profit Calc - Trade ${trade.tradeId}: Broker2 (${trade.broker2?.terminal}) Ticket ${trade.broker2Ticket} = $${broker2Profit}`);
+    } else {
+      logger.warn(`Profit Calc - Trade ${trade.tradeId}: Broker2 position with ticket ${trade.broker2Ticket} not found in ${trade.broker2?.terminal} positions`);
+    }
+
+    logger.info(`Profit Calc - Trade ${trade.tradeId}: Total profit = $${broker1Profit} + $${broker2Profit} = $${totalProfit}`);
+    return totalProfit;
+  }
+
+  // Execute take profit by closing positions
+  async executeTakeProfit(trade) {
+    try {
+      logger.info(`🎯 Executing take profit for trade ${trade.tradeId} - Mode: ${trade.takeProfitMode}, Target: ${trade.takeProfit}`);
+      
+      // Get broker tokens
+      const broker1Token = await this.getValidToken(trade.broker1, trade.broker1?.terminal === 'MT5');
+      const broker2Token = await this.getValidToken(trade.broker2, trade.broker2?.terminal === 'MT5');
+      
+      logger.info(`TP Execute - Trade ${trade.tradeId}: Got tokens for both brokers`);
+
+      // Close both positions
+      const closeResults = [];
+
+      // Close broker1 position
+      try {
+        const broker1ApiUrl = trade.broker1?.terminal === 'MT4' ? 
+          'https://mt4.premiumprofit.live' : 'https://mt5.premiumprofit.live';
+        const broker1CloseUrl = `${broker1ApiUrl}/OrderClose`;
+        
+        logger.info(`TP Execute - Trade ${trade.tradeId}: Closing Broker1 (${trade.broker1?.terminal}) via ${broker1CloseUrl}`);
+        logger.info(`TP Execute - Broker1 params: ticket=${trade.broker1Ticket}, lots=${trade.broker1Volume}, token=${broker1Token?.substring(0,10)}...`);
+        
+        const broker1Response = await axios.get(`${broker1ApiUrl}/OrderClose`, {
+          params: {
+            id: broker1Token,
+            ticket: trade.broker1Ticket,
+            lots: trade.broker1Volume,
+            price: 0,
+            slippage: 0
+          }
+        });
+        
+        logger.info(`TP Execute - Trade ${trade.tradeId}: Broker1 close response:`, broker1Response.data);
+        closeResults.push({
+          broker: 'Broker 1',
+          success: true,
+          data: broker1Response.data,
+          ticket: trade.broker1Ticket
+        });
+      } catch (error) {
+        logger.error(`TP Execute - Trade ${trade.tradeId}: Broker1 close failed:`, error.message);
+        closeResults.push({
+          broker: 'Broker 1',
+          success: false,
+          error: error.message,
+          ticket: trade.broker1Ticket
+        });
+      }
+
+      // Close broker2 position
+      try {
+        const broker2ApiUrl = trade.broker2?.terminal === 'MT4' ? 
+          'https://mt4.premiumprofit.live' : 'https://mt5.premiumprofit.live';
+        const broker2CloseUrl = `${broker2ApiUrl}/OrderClose`;
+        
+        logger.info(`TP Execute - Trade ${trade.tradeId}: Closing Broker2 (${trade.broker2?.terminal}) via ${broker2CloseUrl}`);
+        logger.info(`TP Execute - Broker2 params: ticket=${trade.broker2Ticket}, lots=${trade.broker2Volume}, token=${broker2Token?.substring(0,10)}...`);
+        
+        const broker2Response = await axios.get(`${broker2ApiUrl}/OrderClose`, {
+          params: {
+            id: broker2Token,
+            ticket: trade.broker2Ticket,
+            lots: trade.broker2Volume,
+            price: 0,
+            slippage: 0
+          }
+        });
+        
+        logger.info(`TP Execute - Trade ${trade.tradeId}: Broker2 close response:`, broker2Response.data);
+        closeResults.push({
+          broker: 'Broker 2',
+          success: true,
+          data: broker2Response.data,
+          ticket: trade.broker2Ticket
+        });
+      } catch (error) {
+        logger.error(`TP Execute - Trade ${trade.tradeId}: Broker2 close failed:`, error.message);
+        closeResults.push({
+          broker: 'Broker 2',
+          success: false,
+          error: error.message,
+          ticket: trade.broker2Ticket
+        });
+      }
+
+      // Create closed trade record
+      const transaction = await ActiveTrade.sequelize.transaction();
+      
+      try {
+        // Calculate total profit from close results
+        let totalProfit = 0;
+        closeResults.forEach(result => {
+          if (result.success && result.data?.profit) {
+            totalProfit += parseFloat(result.data.profit);
+          }
+        });
+
+        await ClosedTrade.create({
+          tradeId: trade.tradeId,
+          accountSetId: trade.accountSetId,
+          userId: trade.userId,
+          
+          // Broker details
+          broker1Id: trade.broker1Id,
+          broker1Ticket: trade.broker1Ticket,
+          broker1Symbol: trade.broker1Symbol,
+          broker1Direction: trade.broker1Direction,
+          broker1Volume: trade.broker1Volume,
+          broker1OpenPrice: trade.broker1OpenPrice,
+          broker1OpenTime: trade.broker1OpenTime,
+          broker1CloseTime: new Date(),
+          broker1Profit: closeResults.find(r => r.broker === 'Broker 1' && r.success)?.data?.profit || 0,
+          
+          broker2Id: trade.broker2Id,
+          broker2Ticket: trade.broker2Ticket,
+          broker2Symbol: trade.broker2Symbol,
+          broker2Direction: trade.broker2Direction,
+          broker2Volume: trade.broker2Volume,
+          broker2OpenPrice: trade.broker2OpenPrice,
+          broker2OpenTime: trade.broker2OpenTime,
+          broker2CloseTime: new Date(),
+          broker2Profit: closeResults.find(r => r.broker === 'Broker 2' && r.success)?.data?.profit || 0,
+          
+          // Trade details
+          executionPremium: trade.executionPremium,
+          closePremium: 0, // Could be calculated
+          takeProfit: trade.takeProfit,
+          takeProfitMode: trade.takeProfitMode,
+          stopLoss: trade.stopLoss,
+          broker1Latency: trade.broker1Latency,
+          broker2Latency: trade.broker2Latency,
+          comment: trade.comment,
+          scalpingMode: trade.scalpingMode,
+          
+          // Close details
+          closeReason: 'TakeProfit',
+          totalProfit: totalProfit,
+          tradeDurationMinutes: Math.floor((Date.now() - new Date(trade.createdAt).getTime()) / (1000 * 60))
+        }, { transaction });
+
+        // Remove from active trades
+        await trade.destroy({ transaction });
+        
+        await transaction.commit();
+        
+        logger.info(`Take profit executed successfully for trade ${trade.tradeId}`);
+        this.broadcastTradeStatusChange(trade, 'closed', 'Take profit executed');
+        
+        const successCount = closeResults.filter(r => r.success).length;
+        logger.info(`TP execution result: ${successCount}/${closeResults.length} positions closed successfully`);
+        
+      } catch (dbError) {
+        await transaction.rollback();
+        throw dbError;
+      }
+
+    } catch (error) {
+      logger.error(`Failed to execute take profit for trade ${trade.tradeId}:`, error);
       throw error;
     }
   }

@@ -16,6 +16,7 @@ const logger = require('./utils/logger');
 const latencyMonitor = require('./services/latencyMonitor');
 const pendingOrderMonitor = require('./services/pendingOrderMonitor');
 const tradeStatusMonitor = require('./services/tradeStatusMonitor');
+const realtimeTpMonitor = require('./services/realtimeTpMonitor');
 const databaseCleanupService = require('./services/databaseCleanupService');
 
 const API_TIMEOUT = 25000;
@@ -500,6 +501,9 @@ wss.on('connection', (ws, req) => {
   // Set up connection tracking
   ws.isAlive = true;
   ws.lastPing = Date.now();
+  
+  // Add this WebSocket client to the real-time TP monitor
+  realtimeTpMonitor.addWebSocketClient(ws);
   
   // Send connection confirmation
   ws.send(JSON.stringify({
@@ -1255,6 +1259,14 @@ syncDatabase()
       console.log('✅ Trade status monitor started successfully');
     } catch (err) {
       console.error('❌ Failed to start trade status monitor:', err);
+    }
+
+    // Start real-time TP monitor (5-second intervals)
+    try {
+      realtimeTpMonitor.start();
+      console.log('✅ Real-time TP monitor started successfully');
+    } catch (err) {
+      console.error('❌ Failed to start real-time TP monitor:', err);
     }
 
     // Start database cleanup service

@@ -12,6 +12,7 @@ const intelligentNormalizer = require('../utils/intelligentBrokerNormalizer');
 const { sequelize, ActiveTrade, ClosedTrade, PendingOrder } = require('../models');
 const latencyMonitor = require('../services/latencyMonitor');
 const tradingService = require('../services/tradingService');
+const realtimeTpMonitor = require('../services/realtimeTpMonitor');
 
 // Helper to unify incoming param name
 function extractBrokerId(req) {
@@ -675,6 +676,7 @@ router.post('/execute-current', async (req, res) => {
       direction,
       volume,
       takeProfit,
+      takeProfitMode,
       stopLoss,
       scalpingMode,
       comment
@@ -722,6 +724,7 @@ router.post('/execute-current', async (req, res) => {
         direction,
         volume: volumeNum,
         takeProfit: takeProfit ? parseFloat(takeProfit) : null,
+        takeProfitMode: takeProfitMode || 'None',
         stopLoss: stopLoss ? parseFloat(stopLoss) : null,
         scalpingMode: scalpingMode || false,
         comment: comment || 'FluxNetwork Trade'
@@ -742,6 +745,12 @@ router.post('/execute-current', async (req, res) => {
         userId: result.trade.userId,
         status: result.trade.status
       });
+      
+      // Add to real-time TP monitoring if TP is set
+      if (takeProfitMode && takeProfitMode !== 'None' && takeProfit) {
+        await realtimeTpMonitor.addTradeToMonitoring(result.trade.tradeId);
+        console.log(`➕ Added new trade ${result.trade.tradeId} to real-time TP monitoring`);
+      }
       
       return res.json({
         success: true,
@@ -777,6 +786,7 @@ router.post('/execute-target', async (req, res) => {
       volume,
       targetPremium,
       takeProfit,
+      takeProfitMode,
       stopLoss,
       scalpingMode,
       comment
@@ -822,6 +832,7 @@ router.post('/execute-target', async (req, res) => {
       volume: volumeNum,
       targetPremium: targetPremiumNum,
       takeProfit: takeProfit ? parseFloat(takeProfit) : null,
+      takeProfitMode: takeProfitMode || 'None',
       stopLoss: stopLoss ? parseFloat(stopLoss) : null,
       scalpingMode: scalpingMode || false,
       comment: comment || 'FluxNetwork Target Order'
@@ -1232,6 +1243,7 @@ router.post('/close-trade-external', async (req, res) => {
       closePremium: 0, // Could be calculated if needed
       totalProfit: totalProfit,
       takeProfit: activeTrade.takeProfit,
+      takeProfitMode: activeTrade.takeProfitMode || 'None',
       stopLoss: activeTrade.stopLoss,
       closeReason: reason,
       tradeDurationMinutes,
@@ -1550,6 +1562,7 @@ router.post('/force-cleanup', async (req, res) => {
           executionPremium: trade.executionPremium,
           closePremium: trade.executionPremium,
           takeProfit: trade.takeProfit,
+          takeProfitMode: trade.takeProfitMode || 'None',
           stopLoss: trade.stopLoss,
           broker1Latency: trade.broker1Latency,
           broker2Latency: trade.broker2Latency,
@@ -1578,6 +1591,73 @@ router.post('/force-cleanup', async (req, res) => {
     }
 
   } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+});
+
+// ─── PUT /api/trading/update-tp - Update take profit for an active trade ─────────
+router.put('/update-tp', async (req, res) => {
+  try {
+    const { tradeId, takeProfit, takeProfitMode } = req.body;
+    const userId = req.user.id;
+
+    if (!tradeId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Trade ID is required'
+      });
+    }
+
+    // Validate takeProfitMode
+    const validModes = ['None', 'Premium', 'Amount'];
+    if (takeProfitMode && !validModes.includes(takeProfitMode)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid take profit mode. Must be None, Premium, or Amount'
+      });
+    }
+
+    // Find the active trade
+    const trade = await ActiveTrade.findOne({
+      where: { tradeId, userId }
+    });
+
+    if (!trade) {
+      return res.status(404).json({
+        success: false,
+        message: 'Active trade not found'
+      });
+    }
+
+    // Update the trade with new TP values
+    trade.takeProfit = takeProfit;
+    trade.takeProfitMode = takeProfitMode || 'None';
+    await trade.save();
+
+    // Add to or remove from real-time TP monitoring
+    if (takeProfitMode && takeProfitMode !== 'None' && takeProfit) {
+      await realtimeTpMonitor.addTradeToMonitoring(trade.tradeId);
+      console.log(`➕ Added trade ${trade.tradeId} to real-time TP monitoring`);
+    } else {
+      realtimeTpMonitor.removeTradeFromMonitoring(trade.tradeId);
+      console.log(`➖ Removed trade ${trade.tradeId} from real-time TP monitoring`);
+    }
+
+    res.json({
+      success: true,
+      trade: {
+        tradeId: trade.tradeId,
+        takeProfit: trade.takeProfit,
+        takeProfitMode: trade.takeProfitMode
+      },
+      message: 'Take profit updated successfully'
+    });
+
+  } catch (error) {
+    console.error('Error updating take profit:', error);
     res.status(500).json({
       success: false,
       message: error.message

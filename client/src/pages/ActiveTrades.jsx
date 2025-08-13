@@ -14,6 +14,8 @@ export default function ActiveTrades() {
   const [editingTP, setEditingTP] = useState({});
   const [tpValues, setTpValues] = useState({});
   const [savingTP, setSavingTP] = useState(new Set());
+  const [editingTPMode, setEditingTPMode] = useState({});
+  const [tpModes, setTpModes] = useState({});
   
   // Premium spread state (same as Dashboard and TradeExecution)
   const [futureQuote, setFutureQuote] = useState(null);
@@ -333,6 +335,39 @@ export default function ActiveTrades() {
     }
   };
 
+  // Helper function to calculate TP status
+  const getTPStatus = (trade) => {
+    if (!trade.takeProfit || trade.takeProfitMode === 'None') {
+      return { status: 'Not Set', color: '#999' };
+    }
+
+    const takeProfitValue = parseFloat(trade.takeProfit);
+    
+    if (trade.takeProfitMode === 'Premium') {
+      // For Premium mode: Compare with deficit premium
+      const deficitPremium = (parseFloat(trade.executionPremium) || 0) - parseFloat(getCurrentPremiumForTrade(trade));
+      
+      if (deficitPremium >= takeProfitValue) {
+        return { status: 'Triggered!', color: '#4caf50' };
+      } else {
+        const remaining = takeProfitValue - deficitPremium;
+        return { status: `${remaining.toFixed(3)} to go`, color: '#ff9800' };
+      }
+    } else if (trade.takeProfitMode === 'Amount') {
+      // For Amount mode: Compare with current profit
+      const currentProfit = trade.totalProfit || 0;
+      
+      if (currentProfit >= takeProfitValue) {
+        return { status: 'Triggered!', color: '#4caf50' };
+      } else {
+        const remaining = takeProfitValue - currentProfit;
+        return { status: `$${remaining.toFixed(2)} to go`, color: '#ff9800' };
+      }
+    }
+    
+    return { status: 'Active', color: '#2196f3' };
+  };
+
   const loadAccountSets = async () => {
     try {
       const res = await API.get('/account-sets');
@@ -395,27 +430,48 @@ export default function ActiveTrades() {
     }
   };
 
-  const saveTPValue = async (tradeId, newTPValue) => {
+  const saveTPValue = async (tradeId, newTPValue, tpMode) => {
     try {
       setSavingTP(prev => new Set(prev).add(tradeId));
       
-      // Call API to update TP value
+      // Calculate take profit based on mode
+      let takeProfitValue = null;
+      let takeProfitMode = tpMode || 'None';
+      
+      if (takeProfitMode === 'None' || !newTPValue) {
+        takeProfitValue = null;
+        takeProfitMode = 'None';
+      } else if (takeProfitMode === 'Premium') {
+        // For premium mode, store as premium value
+        takeProfitValue = parseFloat(newTPValue);
+      } else if (takeProfitMode === 'Amount') {
+        // For amount mode, store as dollar amount
+        takeProfitValue = parseFloat(newTPValue);
+      }
+      
+      // Call API to update TP value and mode
       const res = await API.put(`/trading/update-tp`, {
         tradeId,
-        takeProfit: newTPValue
+        takeProfit: takeProfitValue,
+        takeProfitMode: takeProfitMode
       });
       
       if (res.data.success) {
         // Update local state
         setActiveTrades(prev => prev.map(trade => 
           trade.tradeId === tradeId 
-            ? { ...trade, takeProfit: newTPValue }
+            ? { 
+                ...trade, 
+                takeProfit: takeProfitValue,
+                takeProfitMode: takeProfitMode
+              }
             : trade
         ));
         
         // Clear editing state
         setEditingTP(prev => ({ ...prev, [tradeId]: false }));
         setTpValues(prev => ({ ...prev, [tradeId]: '' }));
+        setTpModes(prev => ({ ...prev, [tradeId]: '' }));
       } else {
         alert('Failed to update TP: ' + (res.data.message || 'Unknown error'));
       }
@@ -431,14 +487,16 @@ export default function ActiveTrades() {
     }
   };
 
-  const startEditingTP = (tradeId, currentTP) => {
+  const startEditingTP = (tradeId, currentTP, currentTPMode) => {
     setEditingTP(prev => ({ ...prev, [tradeId]: true }));
     setTpValues(prev => ({ ...prev, [tradeId]: currentTP || '' }));
+    setTpModes(prev => ({ ...prev, [tradeId]: currentTPMode || 'None' }));
   };
 
   const cancelEditingTP = (tradeId) => {
     setEditingTP(prev => ({ ...prev, [tradeId]: false }));
     setTpValues(prev => ({ ...prev, [tradeId]: '' }));
+    setTpModes(prev => ({ ...prev, [tradeId]: '' }));
   };
 
   const closeTrade = async (trade) => {
@@ -618,13 +676,9 @@ export default function ActiveTrades() {
               color: '#e3f2fd'
             }}>
               <span>
-                {selectedAccountSet.brokers?.map((broker, index) => 
-                  `Broker ${broker.position || index + 1}: ${broker.terminal} (${broker.brokerName || broker.accountNumber})`
-                ).join(' • ')}
+                Broker 1: {selectedAccountSet.brokers[0]?.terminal} ({selectedAccountSet.brokers[0]?.accountNumber}-{selectedAccountSet.brokers[0]?.brokerName}) • 
+                Broker 2: {selectedAccountSet.brokers[1]?.terminal} ({selectedAccountSet.brokers[1]?.accountNumber}-{selectedAccountSet.brokers[1]?.brokerName})
               </span>
-              <div style={{ marginTop: '8px', fontSize: '0.85rem', opacity: 0.8 }}>
-                Terminal Combination: {selectedAccountSet.brokers?.[0]?.terminal}-{selectedAccountSet.brokers?.[1]?.terminal}
-              </div>
             </div>
           )}
         </div>
@@ -699,13 +753,23 @@ export default function ActiveTrades() {
                       background: index % 2 === 0 ? 'white' : '#f8f9fa',
                       color: '#333'
                     }}>
-                      {/* Broker1 (MT4) */}
+                      {/* Broker1 */}
                       <td style={tableCellStyle}>
-                        <span style={{ fontWeight: 'bold' }}>{trade.broker1Ticket}</span>
+                        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start' }}>
+                          <span style={{ fontWeight: 'bold', fontSize: '0.9rem' }}>{trade.broker1Ticket}</span>
+                          <span style={{ fontSize: '0.75rem', color: '#666', marginTop: '2px' }}>
+                            {selectedAccountSet?.brokers?.[0]?.accountNumber}-{selectedAccountSet?.brokers?.[0]?.brokerName}
+                          </span>
+                        </div>
                       </td>
-                      {/* Broker2 (MT4) */}
+                      {/* Broker2 */}
                       <td style={tableCellStyle}>
-                        <span style={{ fontWeight: 'bold' }}>{trade.broker2Ticket || 'N/A'}</span>
+                        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start' }}>
+                          <span style={{ fontWeight: 'bold', fontSize: '0.9rem' }}>{trade.broker2Ticket || 'N/A'}</span>
+                          <span style={{ fontSize: '0.75rem', color: '#666', marginTop: '2px' }}>
+                            {selectedAccountSet?.brokers?.[1]?.accountNumber}-{selectedAccountSet?.brokers?.[1]?.brokerName}
+                          </span>
+                        </div>
                       </td>
                       {/* Direction */}
                       <td style={tableCellStyle}>
@@ -769,83 +833,200 @@ export default function ActiveTrades() {
                       {/* TP */}
                       <td style={tableCellStyle}>
                         {editingTP[trade.tradeId] ? (
-                          <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
-                            <input
-                              type="number"
-                              step="0.00001"
-                              value={tpValues[trade.tradeId] || ''}
-                              onChange={(e) => setTpValues(prev => ({ ...prev, [trade.tradeId]: e.target.value }))}
-                              style={{
-                                width: '80px',
-                                padding: '4px 6px',
-                                border: '1px solid #ddd',
-                                borderRadius: '4px',
-                                fontSize: '0.8rem'
-                              }}
-                              placeholder="Enter TP"
-                              autoFocus
-                            />
-                            <button
-                              onClick={() => saveTPValue(trade.tradeId, tpValues[trade.tradeId])}
-                              disabled={savingTP.has(trade.tradeId)}
-                              style={{
-                                background: '#4caf50',
-                                color: 'white',
-                                border: 'none',
-                                padding: '4px 8px',
-                                borderRadius: '4px',
-                                fontSize: '0.7rem',
-                                cursor: savingTP.has(trade.tradeId) ? 'not-allowed' : 'pointer'
-                              }}
-                            >
-                              {savingTP.has(trade.tradeId) ? '...' : '✓'}
-                            </button>
-                            <button
-                              onClick={() => cancelEditingTP(trade.tradeId)}
-                              style={{
-                                background: '#f44336',
-                                color: 'white',
-                                border: 'none',
-                                padding: '4px 8px',
-                                borderRadius: '4px',
-                                fontSize: '0.7rem',
-                                cursor: 'pointer'
-                              }}
-                            >
-                              ✕
-                            </button>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', minWidth: '200px' }}>
+                            {/* TP Mode Selection */}
+                            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '4px' }}>
+                              <label style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '0.7rem', cursor: 'pointer' }}>
+                                <input 
+                                  type="radio" 
+                                  name={`tpMode-${trade.tradeId}`}
+                                  value="None" 
+                                  checked={(tpModes[trade.tradeId] || trade.takeProfitMode || 'None') === 'None'}
+                                  onChange={(e) => {
+                                    setTpModes(prev => ({ ...prev, [trade.tradeId]: e.target.value }));
+                                    if (e.target.value === 'None') {
+                                      setTpValues(prev => ({ ...prev, [trade.tradeId]: '' }));
+                                    }
+                                  }}
+                                />
+                                None
+                              </label>
+                              <label style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '0.7rem', cursor: 'pointer' }}>
+                                <input 
+                                  type="radio" 
+                                  name={`tpMode-${trade.tradeId}`}
+                                  value="Premium" 
+                                  checked={(tpModes[trade.tradeId] || trade.takeProfitMode || 'None') === 'Premium'}
+                                  onChange={(e) => setTpModes(prev => ({ ...prev, [trade.tradeId]: e.target.value }))}
+                                />
+                                Premium
+                              </label>
+                              <label style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '0.7rem', cursor: 'pointer' }}>
+                                <input 
+                                  type="radio" 
+                                  name={`tpMode-${trade.tradeId}`}
+                                  value="Amount" 
+                                  checked={(tpModes[trade.tradeId] || trade.takeProfitMode || 'None') === 'Amount'}
+                                  onChange={(e) => setTpModes(prev => ({ ...prev, [trade.tradeId]: e.target.value }))}
+                                />
+                                Amount
+                              </label>
+                            </div>
+                            
+                            {/* TP Value Input - only show when not 'None' */}
+                            {(tpModes[trade.tradeId] || trade.takeProfitMode || 'None') !== 'None' && (
+                              <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
+                                <input
+                                  type="number"
+                                  step={(tpModes[trade.tradeId] || trade.takeProfitMode) === 'Premium' ? "0.00001" : "0.01"}
+                                  value={tpValues[trade.tradeId] || ''}
+                                  onChange={(e) => setTpValues(prev => ({ ...prev, [trade.tradeId]: e.target.value }))}
+                                  style={{
+                                    width: '80px',
+                                    padding: '4px 6px',
+                                    border: '1px solid #ddd',
+                                    borderRadius: '4px',
+                                    fontSize: '0.8rem'
+                                  }}
+                                  placeholder={(tpModes[trade.tradeId] || trade.takeProfitMode) === 'Premium' ? 'Premium' : '$Amount'}
+                                  autoFocus
+                                />
+                                <button
+                                  onClick={() => saveTPValue(trade.tradeId, tpValues[trade.tradeId], tpModes[trade.tradeId] || trade.takeProfitMode)}
+                                  disabled={savingTP.has(trade.tradeId)}
+                                  style={{
+                                    background: '#4caf50',
+                                    color: 'white',
+                                    border: 'none',
+                                    padding: '4px 8px',
+                                    borderRadius: '4px',
+                                    fontSize: '0.7rem',
+                                    cursor: savingTP.has(trade.tradeId) ? 'not-allowed' : 'pointer'
+                                  }}
+                                >
+                                  {savingTP.has(trade.tradeId) ? '...' : '✓'}
+                                </button>
+                                <button
+                                  onClick={() => cancelEditingTP(trade.tradeId)}
+                                  style={{
+                                    background: '#f44336',
+                                    color: 'white',
+                                    border: 'none',
+                                    padding: '4px 8px',
+                                    borderRadius: '4px',
+                                    fontSize: '0.7rem',
+                                    cursor: 'pointer'
+                                  }}
+                                >
+                                  ✕
+                                </button>
+                              </div>
+                            )}
+                            
+                            {/* Helper text */}
+                            {(tpModes[trade.tradeId] || trade.takeProfitMode) === 'Premium' && (
+                              <div style={{ fontSize: '0.65rem', color: '#666', marginTop: '2px' }}>
+                                Deficit premium target
+                              </div>
+                            )}
+                            {(tpModes[trade.tradeId] || trade.takeProfitMode) === 'Amount' && (
+                              <div style={{ fontSize: '0.65rem', color: '#666', marginTop: '2px' }}>
+                                Dollar amount target
+                              </div>
+                            )}
+                            
+                            {/* Save button when None is selected */}
+                            {(tpModes[trade.tradeId] || trade.takeProfitMode || 'None') === 'None' && (
+                              <div style={{ display: 'flex', gap: '4px' }}>
+                                <button
+                                  onClick={() => saveTPValue(trade.tradeId, null, 'None')}
+                                  disabled={savingTP.has(trade.tradeId)}
+                                  style={{
+                                    background: '#4caf50',
+                                    color: 'white',
+                                    border: 'none',
+                                    padding: '4px 8px',
+                                    borderRadius: '4px',
+                                    fontSize: '0.7rem',
+                                    cursor: savingTP.has(trade.tradeId) ? 'not-allowed' : 'pointer'
+                                  }}
+                                >
+                                  {savingTP.has(trade.tradeId) ? '...' : 'Clear TP'}
+                                </button>
+                                <button
+                                  onClick={() => cancelEditingTP(trade.tradeId)}
+                                  style={{
+                                    background: '#f44336',
+                                    color: 'white',
+                                    border: 'none',
+                                    padding: '4px 8px',
+                                    borderRadius: '4px',
+                                    fontSize: '0.7rem',
+                                    cursor: 'pointer'
+                                  }}
+                                >
+                                  ✕
+                                </button>
+                              </div>
+                            )}
                           </div>
                         ) : (
                           <div 
-                            onClick={() => startEditingTP(trade.tradeId, trade.takeProfit)}
+                            onClick={() => startEditingTP(trade.tradeId, trade.takeProfit, trade.takeProfitMode)}
                             style={{
                               display: 'flex',
-                              alignItems: 'center',
-                              gap: '4px',
+                              flexDirection: 'column',
+                              alignItems: 'flex-start',
+                              gap: '2px',
                               cursor: 'pointer',
                               padding: '4px 8px',
                               borderRadius: '4px',
                               background: '#e3f2fd',
                               border: '1px solid transparent',
-                              transition: 'all 0.2s'
+                              transition: 'all 0.2s',
+                              minWidth: '120px'
                             }}
                             onMouseOver={(e) => {
-                              e.target.style.background = '#bbdefb';
-                              e.target.style.border = '1px solid #1976d2';
+                              e.currentTarget.style.background = '#bbdefb';
+                              e.currentTarget.style.border = '1px solid #1976d2';
                             }}
                             onMouseOut={(e) => {
-                              e.target.style.background = '#e3f2fd';
-                              e.target.style.border = '1px solid transparent';
+                              e.currentTarget.style.background = '#e3f2fd';
+                              e.currentTarget.style.border = '1px solid transparent';
                             }}
                           >
-                            <span style={{
-                              color: '#1976d2',
-                              fontSize: '0.8rem',
-                              fontWeight: 'bold'
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                              <span style={{
+                                color: '#1976d2',
+                                fontSize: '0.8rem',
+                                fontWeight: 'bold'
+                              }}>
+                                {trade.takeProfitMode === 'None' || !trade.takeProfit ? 'No TP' : 
+                                 trade.takeProfitMode === 'Premium' ? `P:${trade.takeProfit}` :
+                                 trade.takeProfitMode === 'Amount' ? `$${trade.takeProfit}` :
+                                 trade.takeProfit || 'Set TP'}
+                              </span>
+                              <span style={{ color: '#1976d2', fontSize: '0.7rem' }}>✏️</span>
+                            </div>
+                            <div style={{
+                              fontSize: '0.65rem',
+                              color: '#666',
+                              fontStyle: 'italic'
                             }}>
-                              {trade.takeProfit || 'Set TP'}
-                            </span>
-                            <span style={{ color: '#1976d2', fontSize: '0.7rem' }}>✏️</span>
+                              {trade.takeProfitMode === 'Premium' ? 'Premium Mode' :
+                               trade.takeProfitMode === 'Amount' ? 'Amount Mode' :
+                               'Click to set TP'}
+                            </div>
+                            {/* Show TP status */}
+                            {trade.takeProfit && trade.takeProfitMode !== 'None' && (
+                              <div style={{
+                                fontSize: '0.65rem',
+                                fontWeight: 'bold',
+                                color: getTPStatus(trade).color
+                              }}>
+                                {getTPStatus(trade).status}
+                              </div>
+                            )}
                           </div>
                         )}
                       </td>

@@ -39,7 +39,7 @@ const ActiveTrade = sequelize.define('ActiveTrade', {
   // Broker 1 (Future) trade details
   broker1Id: {
     type: DataTypes.UUID,
-    allowNull: false,
+    allowNull: true, // Allow null for partial trades
     references: {
       model: 'brokers',
       key: 'id'
@@ -47,19 +47,19 @@ const ActiveTrade = sequelize.define('ActiveTrade', {
   },
   broker1Ticket: {
     type: DataTypes.STRING,
-    allowNull: false
+    allowNull: true // Allow null for partial trades
   },
   broker1Symbol: {
     type: DataTypes.STRING,
-    allowNull: false
+    allowNull: true // Allow null for partial trades
   },
   broker1Direction: {
     type: DataTypes.ENUM('Buy', 'Sell'),
-    allowNull: false
+    allowNull: true // Allow null for partial trades
   },
   broker1Volume: {
     type: DataTypes.DECIMAL(10, 2),
-    allowNull: false
+    allowNull: true // Allow null for partial trades
   },
   broker1OpenPrice: {
     type: DataTypes.DECIMAL(10, 5),
@@ -74,7 +74,7 @@ const ActiveTrade = sequelize.define('ActiveTrade', {
   // Broker 2 (Spot) trade details
   broker2Id: {
     type: DataTypes.UUID,
-    allowNull: false,
+    allowNull: true, // Allow null for partial trades
     references: {
       model: 'brokers',
       key: 'id'
@@ -82,19 +82,19 @@ const ActiveTrade = sequelize.define('ActiveTrade', {
   },
   broker2Ticket: {
     type: DataTypes.STRING,
-    allowNull: false
+    allowNull: true // Allow null for partial trades
   },
   broker2Symbol: {
     type: DataTypes.STRING,
-    allowNull: false
+    allowNull: true // Allow null for partial trades
   },
   broker2Direction: {
     type: DataTypes.ENUM('Buy', 'Sell'),
-    allowNull: false
+    allowNull: true // Allow null for partial trades
   },
   broker2Volume: {
     type: DataTypes.DECIMAL(10, 2),
-    allowNull: false
+    allowNull: true // Allow null for partial trades
   },
   broker2OpenPrice: {
     type: DataTypes.DECIMAL(10, 5),
@@ -116,6 +116,12 @@ const ActiveTrade = sequelize.define('ActiveTrade', {
     type: DataTypes.DECIMAL(10, 5),
     allowNull: true,
     comment: 'Take profit level'
+  },
+  takeProfitMode: {
+    type: DataTypes.ENUM('None', 'Premium', 'Amount'),
+    defaultValue: 'None',
+    allowNull: false,
+    comment: 'Take profit mode: None, Premium (deficit premium target), or Amount (dollar amount target)'
   },
   stopLoss: {
     type: DataTypes.DECIMAL(10, 5),
