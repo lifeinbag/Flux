@@ -386,7 +386,10 @@ async function fetchQuote(token, symbol, terminal, brokerId = null) {
   const startTime = Date.now();
   
   try {
-    const response = await makeAPIRequest(`/GetQuote?id=${token}&symbol=${symbol}`, {
+    // URL encode the symbol to handle special characters like #
+    const encodedSymbol = encodeURIComponent(symbol);
+    
+    const response = await makeAPIRequest(`/GetQuote?id=${token}&symbol=${encodedSymbol}`, {
       isMT5: terminal === 'MT5'
     });
 
@@ -402,7 +405,7 @@ async function fetchQuote(token, symbol, terminal, brokerId = null) {
       return {
         bid: parseFloat(response.bid),
         ask: parseFloat(response.ask),
-        symbol,
+        symbol, // Keep original symbol name for display
         timestamp: new Date(),
         latency
       };
