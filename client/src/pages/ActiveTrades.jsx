@@ -757,18 +757,12 @@ export default function ActiveTrades() {
                       <td style={tableCellStyle}>
                         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start' }}>
                           <span style={{ fontWeight: 'bold', fontSize: '0.9rem' }}>{trade.broker1Ticket}</span>
-                          <span style={{ fontSize: '0.75rem', color: '#666', marginTop: '2px' }}>
-                            {selectedAccountSet?.brokers?.[0]?.accountNumber}-{selectedAccountSet?.brokers?.[0]?.brokerName}
-                          </span>
                         </div>
                       </td>
                       {/* Broker2 */}
                       <td style={tableCellStyle}>
                         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start' }}>
                           <span style={{ fontWeight: 'bold', fontSize: '0.9rem' }}>{trade.broker2Ticket || 'N/A'}</span>
-                          <span style={{ fontSize: '0.75rem', color: '#666', marginTop: '2px' }}>
-                            {selectedAccountSet?.brokers?.[1]?.accountNumber}-{selectedAccountSet?.brokers?.[1]?.brokerName}
-                          </span>
                         </div>
                       </td>
                       {/* Direction */}

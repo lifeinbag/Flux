@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, createContext, useCallback } from '
 import API from '../services/api';
 import { fetchSymbols, fetchQuote } from '../services/api';
 import SellPremiumChart from '../components/SellPremiumChart';
-import { connectWS, onMessage, subscribeToQuotes, isWSConnected, getWSStatus, clearQuoteSubscriptions } from '../services/wsService';
+import { connectWS, onMessage, subscribeToQuotes, subscribeToOpenOrders, isWSConnected, getWSStatus, clearQuoteSubscriptions } from '../services/wsService';
 import { TrendingUp, DollarSign, BarChart3, Activity, AlertTriangle, Lock, Unlock, Clock } from 'lucide-react';
 import './Dashboard.css';
 
@@ -158,6 +158,8 @@ export default function Dashboard() {
   const currentSet = accountSets.find(s => s._id === selectedSetId) || { brokers: [] };
   const [brokerBalances, setBrokerBalances] = useState({});
   const [tradeMapping, setTradeMapping] = useState([]);
+  const [activeTrades, setActiveTrades] = useState([]);
+  const [closedTrades, setClosedTrades] = useState([]);
   const [futureQuote, setFutureQuote] = useState(null);
   const [spotQuote, setSpotQuote] = useState(null);
   const [buyPremium, setBuyPremium] = useState(0);
@@ -205,11 +207,18 @@ export default function Dashboard() {
   // Enhanced balance data with error handling - show 0 balance instead of error for non-admin users
   const b1 = key1 ? (brokerBalances[key1] || { balance: 0, profit: 0 }) : { balance: 0, profit: 0 };
   const b2 = key2 ? (brokerBalances[key2] || { balance: 0, profit: 0 }) : { balance: 0, profit: 0 };
-  const overallNetProfit = tradeMapping.length > 0
-    ? tradeMapping.reduce((sum, t) => sum + (t.mt4Profit || 0) + (t.mt5Profit || 0), 0)
-    : Object.values(brokerBalances).reduce((sum, b) => sum + (b.profit || 0), 0);
-  const totalOpenOrders = tradeMapping.length;
-  const totalOpenLots = tradeMapping.reduce((sum, t) => sum + (t.lots || 0), 0);
+  const currentProfit = activeTrades.reduce((sum, t) => sum + (t.totalProfit || 0), 0);
+  const overallProfit = closedTrades.reduce((sum, t) => sum + (parseFloat(t.totalProfit) || 0), 0);
+  const totalOpenOrders = activeTrades.length;
+  const totalOpenLots = activeTrades.reduce((sum, t) => sum + (parseFloat(t.broker1Volume) || 0), 0);
+  
+  // Calculate Avg. Premium = (Sum of [Opening Premium × Lot Size]) / (Sum of Lot Sizes)
+  const totalWeightedPremium = activeTrades.reduce((sum, t) => {
+    const premium = parseFloat(t.executionPremium) || 0;
+    const lotSize = parseFloat(t.broker1Volume) || 0;
+    return sum + (premium * lotSize);
+  }, 0);
+  const avgPremium = totalOpenLots > 0 ? totalWeightedPremium / totalOpenLots : 0;
   const timeframeOptions = [
     { value: 1, label: '1M' },
     { value: 5, label: '5M' },
@@ -242,6 +251,57 @@ export default function Dashboard() {
     },
     [broker1Id, broker2Id]
   );
+
+  const loadActiveTradesData = useCallback(async () => {
+    if (!selectedSetId) return;
+    
+    try {
+      const res = await API.get(`/trading/active-trades?accountSetId=${selectedSetId}`);
+      if (res.data.success) {
+        const trades = res.data.trades || [];
+        console.log('📊 Dashboard: Active trades loaded:', trades);
+        const tradesWithProfits = trades.map(trade => ({
+          ...trade,
+          broker1Profit: trade.broker1Profit || 0,
+          broker2Profit: trade.broker2Profit || 0,
+          totalProfit: (trade.broker1Profit || 0) + (trade.broker2Profit || 0)
+        }));
+        console.log('📊 Dashboard: Trades with profits calculated:', tradesWithProfits);
+        setActiveTrades(tradesWithProfits);
+      }
+    } catch (err) {
+      console.error('Failed to load active trades:', err);
+      setActiveTrades([]);
+    }
+  }, [selectedSetId]);
+
+  const loadClosedTradesData = useCallback(async () => {
+    if (!selectedSetId) return;
+    
+    try {
+      const res = await API.get(`/trading/closed-trades?accountSetId=${selectedSetId}`);
+      if (res.data.success) {
+        const trades = res.data.trades || [];
+        console.log('💰 Dashboard: Closed trades loaded:', trades);
+        console.log('💰 Dashboard: Closed trades sample profit fields:', trades[0] ? {
+          totalProfit: trades[0].totalProfit,
+          broker1Profit: trades[0].broker1Profit,
+          broker2Profit: trades[0].broker2Profit
+        } : 'No trades');
+        setClosedTrades(trades);
+      }
+    } catch (err) {
+      console.error('Failed to load closed trades:', err);
+      setClosedTrades([]);
+    }
+  }, [selectedSetId]);
+
+  useEffect(() => {
+    if (selectedSetId) {
+      loadActiveTradesData();
+      loadClosedTradesData();
+    }
+  }, [selectedSetId, loadActiveTradesData, loadClosedTradesData]);
 
   useEffect(() => {
     API.get('/users/me')
@@ -557,6 +617,48 @@ export default function Dashboard() {
       if (Array.isArray(data)) setTradeMapping(data);
     };
 
+    const handleActiveTradesUpdate = (msg) => {
+      const payload = msg?.data ?? msg;
+      const accountSetId = payload?.accountSetId;
+      const orders = Array.isArray(payload?.orders) ? payload.orders : [];
+
+      if (accountSetId !== selectedSetId) return;
+
+      setActiveTrades(prev => {
+        const byKey = new Map();
+        for (const o of orders) {
+          const keys = [];
+          if (o.brokerId) keys.push(`${o.brokerId}:${o.ticket}`);
+          if (o.brokerPosition != null) keys.push(`${o.brokerPosition}:${o.ticket}`);
+          keys.push(String(o.ticket));
+          keys.forEach(key => byKey.set(key, o));
+        }
+
+        return prev.map(t => {
+          const o1Keys = [
+            `${t.broker1Id}:${t.broker1Ticket}`,
+            `1:${t.broker1Ticket}`,
+            String(t.broker1Ticket)
+          ];
+          const o2Keys = [
+            `${t.broker2Id}:${t.broker2Ticket}`,
+            `2:${t.broker2Ticket}`,
+            String(t.broker2Ticket)
+          ];
+          
+          const o1 = o1Keys.map(key => byKey.get(key)).find(order => order);
+          const o2 = o2Keys.map(key => byKey.get(key)).find(order => order);
+          
+          const p1 = Number(o1?.profit) || 0;
+          const p2 = Number(o2?.profit) || 0;
+          
+          console.log(`💰 Dashboard: Updated profits for trade ${t.tradeId}: broker1=${p1}, broker2=${p2}, total=${p1 + p2}`);
+
+          return { ...t, broker1Profit: p1, broker2Profit: p2, totalProfit: p1 + p2 };
+        });
+      });
+    };
+
     // Register message handlers FIRST
     const unsubConnection = onMessage('connection', handleConnectionConfirmed);
     const unsubSubscription = onMessage('subscription_confirmed', handleSubscriptionConfirmed);
@@ -564,9 +666,13 @@ export default function Dashboard() {
     const unsubBal = onMessage('balance', handleBalanceUpdate);
     const unsubErr = onMessage('error', handleError);
     const unsubTrade = onMessage('trade_mapping', handleTradeMapping);
+    const unsubActiveOrders = onMessage('open_orders_update', handleActiveTradesUpdate);
 
     // Connect to WebSocket
     connectWS(selectedSetId);
+    
+    // Subscribe to open orders for dashboard updates
+    subscribeToOpenOrders(selectedSetId);
     
     // ✅ FIX: Only subscribe to quotes if symbols are LOCKED
     if (currentSet.symbolsLocked && currentSet.futureSymbol && currentSet.spotSymbol) {
@@ -609,6 +715,7 @@ export default function Dashboard() {
       unsubBal();
       unsubErr();
       unsubTrade();
+      unsubActiveOrders();
     };
   }, [selectedSetId, futureSymbol, spotSymbol, currentSet.symbolsLocked, currentSet.futureSymbol, currentSet.spotSymbol]);
 
@@ -870,8 +977,8 @@ export default function Dashboard() {
                       </label>
                       {lockedFutureQuote && (
                         <div className="quote-display">
-                          <span className="bid">Bid: {lockedFutureQuote.bid?.toFixed(3)}</span>
-                          <span className="ask">Ask: {lockedFutureQuote.ask?.toFixed(3)}</span>
+                          <span className="bid">Bid: {lockedFutureQuote.bid?.toFixed(2)}</span>
+                          <span className="ask">Ask: {lockedFutureQuote.ask?.toFixed(2)}</span>
                         </div>
                       )}
                     </div>
@@ -886,8 +993,8 @@ export default function Dashboard() {
                       </label>
                       {lockedSpotQuote && (
                         <div className="quote-display">
-                          <span className="bid">Bid: {lockedSpotQuote.bid?.toFixed(3)}</span>
-                          <span className="ask">Ask: {lockedSpotQuote.ask?.toFixed(3)}</span>
+                          <span className="bid">Bid: {lockedSpotQuote.bid?.toFixed(2)}</span>
+                          <span className="ask">Ask: {lockedSpotQuote.ask?.toFixed(2)}</span>
                         </div>
                       )}
                     </div>
@@ -901,8 +1008,8 @@ export default function Dashboard() {
                         Unlock
                       </button>
                       <div className="premium-display">
-                        <div>Buy Premium: {buyPremium.toFixed(3)}</div>
-                        <div>Sell Premium: {sellPremium.toFixed(3)}</div>
+                        <div>Buy Premium: {buyPremium.toFixed(2)}</div>
+                        <div>Sell Premium: {sellPremium.toFixed(2)}</div>
                       </div>
                     </div>
                   </>
@@ -932,8 +1039,8 @@ export default function Dashboard() {
                       </datalist>
                       {futureQuote && (
                         <div className="quote-display">
-                          <span className="bid">Bid: {futureQuote.bid?.toFixed(3)}</span>
-                          <span className="ask">Ask: {futureQuote.ask?.toFixed(3)}</span>
+                          <span className="bid">Bid: {futureQuote.bid?.toFixed(2)}</span>
+                          <span className="ask">Ask: {futureQuote.ask?.toFixed(2)}</span>
                         </div>
                       )}
                     </div>
@@ -962,8 +1069,8 @@ export default function Dashboard() {
                       </datalist>
                       {spotQuote && (
                         <div className="quote-display">
-                          <span className="bid">Bid: {spotQuote.bid?.toFixed(3)}</span>
-                          <span className="ask">Ask: {spotQuote.ask?.toFixed(3)}</span>
+                          <span className="bid">Bid: {spotQuote.bid?.toFixed(2)}</span>
+                          <span className="ask">Ask: {spotQuote.ask?.toFixed(2)}</span>
                         </div>
                       )}
                     </div>
@@ -1036,12 +1143,28 @@ export default function Dashboard() {
                 </div>
                 <div className="card-info">
                   <h3>Current P&L</h3>
-                  <p>Open Orders: {totalOpenOrders} | Lots: {totalOpenLots.toFixed(2)}</p>
+                  <p>Open Orders: {totalOpenOrders} | Lots: {totalOpenLots.toFixed(2)} | Avg. Premium: {avgPremium.toFixed(2)}</p>
                 </div>
               </div>
-              <div className="card-value">${overallNetProfit.toLocaleString()}</div>
-              <div className={`card-change ${overallNetProfit >= 0 ? 'positive' : 'negative'}`}>
-                {overallNetProfit >= 0 ? 'Profit' : 'Loss'}
+              <div className="card-value">${currentProfit.toLocaleString()}</div>
+              <div className={`card-change ${currentProfit >= 0 ? 'positive' : 'negative'}`}>
+                {currentProfit >= 0 ? 'Profit' : 'Loss'}
+              </div>
+            </div>
+
+            <div className="performance-card overall">
+              <div className="card-header">
+                <div className="card-icon">
+                  <BarChart3 style={{ width: '24px', height: '24px', color: '#ff9800' }} />
+                </div>
+                <div className="card-info">
+                  <h3>Overall Profit</h3>
+                  <p>Closed Trades: {closedTrades.length}</p>
+                </div>
+              </div>
+              <div className="card-value">${overallProfit.toLocaleString()}</div>
+              <div className={`card-change ${overallProfit >= 0 ? 'positive' : 'negative'}`}>
+                {overallProfit >= 0 ? 'Total Gain' : 'Total Loss'}
               </div>
             </div>
 
