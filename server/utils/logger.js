@@ -78,13 +78,14 @@ class Logger {
   log(level, message, data = null) {
     const formattedMessage = this.formatMessage(level, message, data);
     
-    // Write to console with colors
+    // Write to console with colors (safely handle error objects)
+    const safeData = data && typeof data === 'object' && data.message ? data.message : (data || '');
     switch (level) {
       case 'ERROR':
-        console.error(`❌ ${message}`, data || '');
+        console.error(`❌ ${message}`, safeData);
         break;
       case 'WARN':
-        console.warn(`⚠️ ${message}`, data || '');
+        console.warn(`⚠️ ${message}`, safeData);
         break;
       case 'SUCCESS':
         console.log(`✅ ${message}`, data || '');

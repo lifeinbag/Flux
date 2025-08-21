@@ -21,7 +21,7 @@ router.get('/me', auth, async (req, res) => {
     }
     res.json(user);
   } catch (err) {
-    console.error(err);
+    console.error('User route error:', err.message);
     res.status(500).json({ msg: 'Server error' });
   }
 });
@@ -77,7 +77,7 @@ router.post('/account', auth, async (req, res) => {
     // Return the updated array of tradingAccounts
     return res.json({ tradingAccounts: user.tradingAccounts });
   } catch (err) {
-    console.error(err);
+    console.error('User route error:', err.message);
     res.status(500).json({ msg: 'Server error' });
   }
 });
@@ -158,7 +158,7 @@ router.post('/network/shares', auth, async (req, res) => {
 
     res.json({ level1Share: level1, level2Share: level2 });
   } catch (err) {
-    console.error(err);
+    console.error('User route error:', err.message);
     res.status(500).json({ msg: 'Server error' });
   }
 });

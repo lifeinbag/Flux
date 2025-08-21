@@ -1,5 +1,3 @@
-// client/src/services/api.js
-
 import axios from 'axios';
 
 // ——— Local API instance (for your backend) —————————————
@@ -136,4 +134,24 @@ export function fetchMt4Symbols(id) {
 // ——— Trading Account Management —————————————————————
 export function saveTradingAccount(terminal, token) {
   return API.post('/users/account', { terminal, token });
+}
+
+// ——— NEW: Broker Symbols Cache Endpoint —————————————————————
+/**
+ * Fetch symbols directly from broker_symbols_cache (fast + resilient).
+ * 
+ * Example:
+ *   fetchSymbolsCache({ broker1: "icmarkets", broker2: "exness", terminal: "MT4" })
+ */
+export async function fetchSymbolsCache({ broker1, broker2, terminal }) {
+  const params = new URLSearchParams();
+  if (broker1) params.set('broker1', broker1);
+  if (broker2) params.set('broker2', broker2);
+  if (terminal) params.set('terminal', terminal);
+
+  const res = await fetch(`/api/symbols/cache?${params.toString()}`, {
+    credentials: 'include'
+  });
+  if (!res.ok) throw new Error('symbols_fetch_failed');
+  return res.json();
 }

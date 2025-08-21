@@ -1,9 +1,11 @@
 import React, { useState, useEffect, useRef, createContext, useCallback } from 'react';
 import API from '../services/api';
 import { fetchSymbols, fetchQuote } from '../services/api';
+import symbolsCache from '../services/symbolsCache';
 import SellPremiumChart from '../components/SellPremiumChart';
 import { connectWS, onMessage, subscribeToQuotes, subscribeToOpenOrders, isWSConnected, getWSStatus, clearQuoteSubscriptions } from '../services/wsService';
 import { TrendingUp, DollarSign, BarChart3, Activity, AlertTriangle, Lock, Unlock, Clock } from 'lucide-react';
+import ApiStatusMonitor from '../components/ApiStatusMonitor';
 import './Dashboard.css';
 
 export const DashboardContext = createContext();
@@ -231,25 +233,36 @@ export default function Dashboard() {
 
   const handleSmartSymbolRefresh = useCallback(
     async (typedSymbol, symbolsList, brokerId, terminal) => {
-      if (typedSymbol.length > 2 && !symbolsList.includes(typedSymbol)) {
+      if (typedSymbol.length > 2) {
         try {
-          await API.post('/trading/refresh-symbols', { brokerId, terminal });
-          const res = await fetchSymbols(terminal, brokerId);
-          const raw = res.data?.symbols;
-          const list = Array.isArray(raw) ? raw : Object.values(raw || {});
-          const processed = list
-            .map(o => o.currency || o.symbol || o.name)
-            .filter(sym => sym && sym.trim());
-          if (brokerId === broker1Id) {
-            setBroker1Symbols(processed);
-          } else if (brokerId === broker2Id) {
-            setBroker2Symbols(processed);
+          console.log('🔍 Dashboard: Smart symbol search triggered for:', typedSymbol);
+          
+          // Find the broker object to search
+          const brokerToSearch = currentSet.brokers?.find(b => (b.id || b._id) === brokerId);
+          if (brokerToSearch) {
+            // Use the new smart search functionality
+            const result = await symbolsCache.searchAndUpdateSymbol(typedSymbol, symbolsList, brokerToSearch);
+            
+            if (result.symbols.length > 0) {
+              if (brokerId === broker1Id) {
+                setBroker1Symbols(result.symbols);
+              } else if (brokerId === broker2Id) {
+                setBroker2Symbols(result.symbols);
+              }
+              
+              if (result.found) {
+                console.log(`✅ Dashboard: Symbol "${typedSymbol}" found after search for ${terminal}`);
+              } else {
+                console.log(`⚠️ Dashboard: Symbol "${typedSymbol}" not found, but cache updated for ${terminal}`);
+              }
+            }
           }
         } catch (err) {
+          console.error('❌ Smart symbol search failed:', err);
         }
       }
     },
-    [broker1Id, broker2Id]
+    [broker1Id, broker2Id, currentSet.brokers]
   );
 
   const loadActiveTradesData = useCallback(async () => {
@@ -799,15 +812,11 @@ export default function Dashboard() {
     }
   };
 
-  // ✅ FIXED: Load symbols with proper error handling and state management
+  // ✅ OPTIMIZED: Load symbols using broker symbols cache
   useEffect(() => {
     console.log('🔄 Dashboard: useEffect symbols loading triggered:', {
       selectedSetId,
-      symbolsLocked: currentSet.symbolsLocked,
-      broker1Id,
-      broker2Id,
-      broker1Term,
-      broker2Term
+      symbolsLocked: currentSet.symbolsLocked
     });
 
     // Clear symbols when account set changes or if symbols are locked
@@ -820,163 +829,42 @@ export default function Dashboard() {
       return;
     }
 
-    if (!broker1Id || !broker2Id || !broker1Term || !broker2Term) {
-      console.log('⚠️ Dashboard: Skipping symbol loading - missing broker info:', {
-        broker1Id, broker2Id, broker1Term, broker2Term
-      });
-      setSymbolsLoading(false);
-      return;
-    }
-
-    const loadSymbolsWithFallback = async () => {
+    const loadSymbolsOptimized = async () => {
       setSymbolsLoading(true);
       setErrorMsg('');
 
-      console.log('🚀 Dashboard: Starting symbol loading for:', {
+      console.log('🚀 Dashboard: Starting optimized symbol loading for:', {
         selectedSetId,
-        broker1: `${broker1Term} (${broker1Id})`,
-        broker2: `${broker2Term} (${broker2Id})`
+        accountSetName: currentSet.name
       });
 
       try {
-        // ✅ Try batch symbols API first
-        console.log('📦 Dashboard: Attempting batch symbols API...');
-        const { fetchMultipleSymbols } = await import('../services/api');
+        // Use the optimized symbols cache service
+        const result = await symbolsCache.getSymbolsForAccountSet(currentSet);
         
-        const batchRes = await fetchMultipleSymbols([
-          { terminal: broker1Term, brokerId: broker1Id },
-          { terminal: broker2Term, brokerId: broker2Id }
-        ]);
-
-        console.log('📦 Dashboard: Batch API response:', batchRes.data);
-
-        if (batchRes.data.success && batchRes.data.data) {
-          const [broker1Result, broker2Result] = batchRes.data.data;
+        if (result.success) {
+          setBroker1Symbols(result.broker1Symbols);
+          setBroker2Symbols(result.broker2Symbols);
+          console.log(`✅ Dashboard: Loaded symbols via cache - Broker1: ${result.broker1Symbols.length}, Broker2: ${result.broker2Symbols.length}`);
           
-          console.log('📊 Dashboard: Batch results:', { broker1Result, broker2Result });
-
-          let symbols1 = [];
-          let symbols2 = [];
-
-          // Process Broker 1 symbols
-          if (broker1Result.success && broker1Result.data?.symbols) {
-            const raw1 = broker1Result.data.symbols;
-            symbols1 = (Array.isArray(raw1) ? raw1 : Object.values(raw1 || {}))
-              .map(o => typeof o === 'string' ? o : o.currency || o.symbol || o.name)
-              .filter(sym => sym && sym.trim());
-            console.log(`✅ Dashboard Broker 1 (${broker1Term}): ${symbols1.length} symbols loaded via ${broker1Result.data.source}`);
-          } else {
-            console.warn(`⚠️ Dashboard Broker 1 failed:`, broker1Result);
-          }
-
-          // Process Broker 2 symbols
-          if (broker2Result.success && broker2Result.data?.symbols) {
-            const raw2 = broker2Result.data.symbols;
-            symbols2 = (Array.isArray(raw2) ? raw2 : Object.values(raw2 || {}))
-              .map(o => typeof o === 'string' ? o : o.currency || o.symbol || o.name)
-              .filter(sym => sym && sym.trim());
-            console.log(`✅ Dashboard Broker 2 (${broker2Term}): ${symbols2.length} symbols loaded via ${broker2Result.data.source}`);
-          } else {
-            console.warn(`⚠️ Dashboard Broker 2 failed:`, broker2Result);
-          }
-
-          setBroker1Symbols(symbols1);
-          setBroker2Symbols(symbols2);
-
-          // Try individual fallback for failed brokers
-          if (!broker1Result.success && broker1Id && broker1Term) {
-            console.log('🔄 Dashboard: Fallback loading Broker 1 individually...');
-            try {
-              const res1 = await fetchSymbols(broker1Term, broker1Id);
-              if (res1.data?.symbols) {
-                const raw1 = res1.data.symbols;
-                const fallback1 = (Array.isArray(raw1) ? raw1 : Object.values(raw1 || {}))
-                  .map(o => typeof o === 'string' ? o : o.currency || o.symbol || o.name)
-                  .filter(sym => sym && sym.trim());
-                console.log(`✅ Dashboard Broker 1 fallback: ${fallback1.length} symbols loaded`);
-                setBroker1Symbols(fallback1);
-              }
-            } catch (err) {
-              console.error('❌ Dashboard Broker 1 fallback failed:', err.message);
-            }
-          }
-
-          if (!broker2Result.success && broker2Id && broker2Term) {
-            console.log('🔄 Dashboard: Fallback loading Broker 2 individually...');
-            try {
-              const res2 = await fetchSymbols(broker2Term, broker2Id);
-              if (res2.data?.symbols) {
-                const raw2 = res2.data.symbols;
-                const fallback2 = (Array.isArray(raw2) ? raw2 : Object.values(raw2 || {}))
-                  .map(o => typeof o === 'string' ? o : o.currency || o.symbol || o.name)
-                  .filter(sym => sym && sym.trim());
-                console.log(`✅ Dashboard Broker 2 fallback: ${fallback2.length} symbols loaded`);
-                setBroker2Symbols(fallback2);
-              }
-            } catch (err) {
-              console.error('❌ Dashboard Broker 2 fallback failed:', err.message);
-            }
-          }
-
-          if (!symbols1.length && !symbols2.length) {
-            setErrorMsg('No symbols loaded. Please check your account configuration.');
+          if (!result.broker1Symbols.length && !result.broker2Symbols.length) {
+            setErrorMsg('No symbols found in cache. Symbols may still be loading in the background.');
           }
         } else {
-          // Batch API completely failed
-          console.warn('⚠️ Dashboard: Batch API failed completely, using individual requests:', batchRes.data);
-          
-          let symbols1 = [], symbols2 = [];
-
-          if (broker1Id && broker1Term) {
-            try {
-              console.log(`🔄 Dashboard Individual: Loading ${broker1Term} symbols...`);
-              const res1 = await fetchSymbols(broker1Term, broker1Id);
-              if (res1.data?.symbols) {
-                const raw1 = res1.data.symbols;
-                symbols1 = (Array.isArray(raw1) ? raw1 : Object.values(raw1 || {}))
-                  .map(o => typeof o === 'string' ? o : o.currency || o.symbol || o.name)
-                  .filter(sym => sym && sym.trim());
-                console.log(`✅ Dashboard Individual Broker 1: ${symbols1.length} symbols loaded`);
-              }
-            } catch (err) {
-              console.error('❌ Dashboard Individual Broker 1 failed:', err.message);
-            }
-          }
-
-          if (broker2Id && broker2Term) {
-            try {
-              console.log(`🔄 Dashboard Individual: Loading ${broker2Term} symbols...`);
-              const res2 = await fetchSymbols(broker2Term, broker2Id);
-              if (res2.data?.symbols) {
-                const raw2 = res2.data.symbols;
-                symbols2 = (Array.isArray(raw2) ? raw2 : Object.values(raw2 || {}))
-                  .map(o => typeof o === 'string' ? o : o.currency || o.symbol || o.name)
-                  .filter(sym => sym && sym.trim());
-                console.log(`✅ Dashboard Individual Broker 2: ${symbols2.length} symbols loaded`);
-              }
-            } catch (err) {
-              console.error('❌ Dashboard Individual Broker 2 failed:', err.message);
-            }
-          }
-
-          setBroker1Symbols(symbols1);
-          setBroker2Symbols(symbols2);
-
-          if (!symbols1.length && !symbols2.length) {
-            setErrorMsg('No symbols loaded. Please check your account configuration.');
-          }
+          console.error('❌ Dashboard: Failed to load symbols:', result.error);
+          setErrorMsg(result.error || 'Failed to load symbols');
         }
       } catch (err) {
-        console.error('❌ Dashboard: Complete symbol loading failure:', err);
+        console.error('❌ Dashboard: Symbol loading error:', err);
         setErrorMsg(`Failed to load symbols: ${err.message}`);
       } finally {
         setSymbolsLoading(false);
-        console.log('🏁 Dashboard: Symbol loading complete');
+        console.log('🏁 Dashboard: Optimized symbol loading complete');
       }
     };
 
-    loadSymbolsWithFallback();
-  }, [selectedSetId, currentSet.symbolsLocked, broker1Id, broker2Id, broker1Term, broker2Term, broker1.position, broker2.position]);
+    loadSymbolsOptimized();
+  }, [selectedSetId, currentSet.symbolsLocked, currentSet.name]);
 
   // ✅ FIXED Premium calculation
   useEffect(() => {
@@ -1103,6 +991,9 @@ export default function Dashboard() {
             {errorMsg}
           </div>
         )}
+        
+        {/* API Status Monitor */}
+        <ApiStatusMonitor />
         
         {selectedSetId && (
           <div style={{

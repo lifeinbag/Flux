@@ -1,5 +1,6 @@
 require('dotenv').config();
 const axios = require('axios');
+const apiErrorMonitor = require('./services/apiErrorMonitor');
 
 class TokenError extends Error {}
 
@@ -244,8 +245,12 @@ const TokenManager = {
     console.log(`🔄 Fetching token for ${serverName} account ${account}...`);
     
     // Method 1: Try ConnectEx directly first (no search needed)
+    const apiName = client.defaults.baseURL?.includes('mt5') ? 'MT5_API' : 'MT4_API';
+    const endpoint = `${client.defaults.baseURL}/ConnectEx`;
+    
     try {
       console.log(`📡 Trying ConnectEx directly for ${serverName}...`);
+      const startTime = Date.now();
       const connectResponse = await client.get('/ConnectEx', {
         params: {
           user: account,
@@ -255,6 +260,10 @@ const TokenManager = {
         timeout: 20000
       });
       
+      // Log successful API call
+      const responseTime = Date.now() - startTime;
+      apiErrorMonitor.logApiSuccess(apiName, endpoint, responseTime);
+      
       // ✅ Validate response
       if (connectResponse.data && typeof connectResponse.data === 'string') {
         const data = connectResponse.data.trim();
@@ -263,7 +272,18 @@ const TokenManager = {
             data.includes('Resource temporarily unavailable') ||
             data.includes('Invalid account') ||
             data.includes('Wrong password')) {
-          throw new Error(`Broker server error: ${data}`);
+          
+          // Log API business logic error (not connection error)
+          const businessError = new Error(`Broker server error: ${data}`);
+          apiErrorMonitor.logApiError(apiName, endpoint, businessError, {
+            context: 'broker_authentication',
+            serverName,
+            account: account?.substring(0, 4) + '***',
+            errorType: 'business_logic',
+            brokerResponse: data
+          });
+          
+          throw businessError;
         }
         
         if (data.length > 10 && !data.includes('error')) {
@@ -275,10 +295,31 @@ const TokenManager = {
         }
       }
       
-      throw new Error('Invalid or empty response from ConnectEx');
+      const emptyResponseError = new Error('Invalid or empty response from ConnectEx');
+      apiErrorMonitor.logApiError(apiName, endpoint, emptyResponseError, {
+        context: 'empty_response',
+        serverName,
+        account: account?.substring(0, 4) + '***',
+        responseData: connectResponse.data
+      });
+      
+      throw emptyResponseError;
       
     } catch (connectExError) {
       console.log(`⚠️ ConnectEx failed for ${serverName}: ${connectExError.message}`);
+      
+      // Log API error with detailed context
+      if (!connectExError.logged) { // Avoid double logging
+        apiErrorMonitor.logApiError(apiName, endpoint, connectExError, {
+          context: 'connection_attempt',
+          serverName,
+          account: account?.substring(0, 4) + '***',
+          errorCode: connectExError.code,
+          errorStatus: connectExError.response?.status,
+          errorMessage: connectExError.response?.data || connectExError.message
+        });
+        connectExError.logged = true;
+      }
       
       // Don't try fallback on authentication errors
       if (connectExError.message.includes('Invalid account') || 

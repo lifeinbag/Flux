@@ -2,6 +2,7 @@ const { ActiveTrade, ClosedTrade, AccountSet, Broker } = require('../models');
 const axios = require('axios');
 const logger = require('../utils/logger');
 const { TokenManager } = require('../token-manager');
+const apiErrorMonitor = require('./apiErrorMonitor');
 
 class TradeStatusMonitor {
   constructor() {
@@ -118,7 +119,13 @@ class TradeStatusMonitor {
             this.broadcastTradeStatusChange(trade, 'closed', 'Both MT4 and MT5 positions closed');
             movedCount++;
           } catch (error) {
-            logger.error(`Failed to move trade ${trade.tradeId} to closed:`, error);
+            logger.error(`Failed to move trade ${trade.tradeId} to closed:`, {
+              error: error.message,
+              errorType: error.name,
+              tradeId: trade.tradeId,
+              accountSetId: trade.accountSetId,
+              constraint: error.constraint || 'unknown'
+            });
           }
         } else if (mt5Open && mt4Open && trade.takeProfit && trade.takeProfitMode !== 'None') {
           // Check if take profit conditions are met
@@ -252,28 +259,50 @@ class TradeStatusMonitor {
   }
 
   async getMT5OpenTrades(token) {
+    const endpoint = process.env.MT5_API_URL || 'https://mt5.fluxnetwork.one:443';
     try {
       const response = await axios.get('/OpenedOrders', {
         params: { id: token },
-        baseURL: process.env.MT5_API_URL || 'https://mt5.fluxnetwork.one:443',
+        baseURL: endpoint,
         timeout: 10000
       });
+      
+      // Log successful API call
+      apiErrorMonitor.logApiSuccess('MT5_FLUX', `${endpoint}/OpenedOrders`);
+      
       return response.data.success !== false ? (response.data.data || response.data || []) : [];
     } catch (error) {
+      // Log API error
+      apiErrorMonitor.logApiError('MT5_FLUX', `${endpoint}/OpenedOrders`, error, {
+        context: 'fetching_open_trades',
+        token: token?.substring(0, 10) + '...'
+      });
+      
       logger.error('Error fetching MT5 open trades:', error);
       return [];
     }
   }
 
   async getMT4OpenTrades(token) {
+    const endpoint = process.env.MT4_API_URL || 'https://mt4.fluxnetwork.one:443';
     try {
       const response = await axios.get('/OpenedOrders', {
         params: { id: token },
-        baseURL: process.env.MT4_API_URL || 'https://mt4.fluxnetwork.one:443',
+        baseURL: endpoint,
         timeout: 10000
       });
+      
+      // Log successful API call
+      apiErrorMonitor.logApiSuccess('MT4_FLUX', `${endpoint}/OpenedOrders`);
+      
       return response.data.success !== false ? (response.data.data || response.data || []) : [];
     } catch (error) {
+      // Log API error
+      apiErrorMonitor.logApiError('MT4_FLUX', `${endpoint}/OpenedOrders`, error, {
+        context: 'fetching_open_trades',
+        token: token?.substring(0, 10) + '...'
+      });
+      
       logger.error('Error fetching MT4 open trades:', error);
       return [];
     }
@@ -283,6 +312,20 @@ class TradeStatusMonitor {
     const transaction = await ActiveTrade.sequelize.transaction();
     
     try {
+      // Check if this trade is already in closed trades (prevent duplicates)
+      const existingClosedTrade = await ClosedTrade.findOne({
+        where: { tradeId: activeTrade.tradeId },
+        transaction
+      });
+      
+      if (existingClosedTrade) {
+        logger.warn(`Trade ${activeTrade.tradeId} already exists in closed trades, skipping creation`);
+        // Just remove from active trades
+        await activeTrade.destroy({ transaction });
+        await transaction.commit();
+        return;
+      }
+      
       // Create closed trade record
       await ClosedTrade.create({
         tradeId: activeTrade.tradeId,
@@ -332,7 +375,21 @@ class TradeStatusMonitor {
       logger.info(`Successfully moved trade ${activeTrade.tradeId} to closed trades`);
       
     } catch (error) {
-      await transaction.rollback();
+      logger.error(`Database error while moving trade ${activeTrade.tradeId} to closed:`, {
+        error: error.message,
+        errorType: error.name,
+        constraint: error.constraint || 'unknown',
+        detail: error.detail || 'no detail',
+        tradeId: activeTrade.tradeId,
+        accountSetId: activeTrade.accountSetId
+      });
+      
+      try {
+        await transaction.rollback();
+      } catch (rollbackError) {
+        logger.error(`Failed to rollback transaction for trade ${activeTrade.tradeId}:`, rollbackError.message);
+      }
+      
       throw error;
     }
   }
@@ -379,29 +436,59 @@ class TradeStatusMonitor {
   // Get current premium for a trade
   async getCurrentPremiumForTrade(trade) {
     try {
-      // Fetch current quotes for both symbols
-      const broker1Token = await this.getValidToken(trade.broker1, trade.broker1?.terminal === 'MT5');
-      const broker2Token = await this.getValidToken(trade.broker2, trade.broker2?.terminal === 'MT5');
+      // 🚀 OPTIMIZATION: Use database-first approach instead of direct API calls
+      const databaseQuoteService = require('./databaseQuoteService');
+      const intelligentNormalizer = require('../utils/intelligentBrokerNormalizer');
       
-      // Get quotes
-      const broker1ApiUrl = trade.broker1?.terminal === 'MT4' ? 
-        'https://mt4.premiumprofit.live' : 'https://mt5.premiumprofit.live';
-      const broker2ApiUrl = trade.broker2?.terminal === 'MT4' ? 
-        'https://mt4.premiumprofit.live' : 'https://mt5.premiumprofit.live';
-      
-      const [futureQuote, spotQuote] = await Promise.all([
-        axios.get(`${broker1ApiUrl}/GetQuote`, {
-          params: { id: broker1Token, symbol: trade.broker1Symbol }
-        }),
-        axios.get(`${broker2ApiUrl}/GetQuote`, {
-          params: { id: broker2Token, symbol: trade.broker2Symbol }
-        })
+      // Get normalized broker names for database lookup
+      const [normalizedBroker1, normalizedBroker2] = await Promise.all([
+        intelligentNormalizer.normalizeBrokerName(trade.broker1.brokerName, trade.broker1.server, trade.broker1.companyName),
+        intelligentNormalizer.normalizeBrokerName(trade.broker2.brokerName, trade.broker2.server, trade.broker2.companyName)
       ]);
       
-      const futureBid = parseFloat(futureQuote.data.bid);
-      const futureAsk = parseFloat(futureQuote.data.ask);
-      const spotBid = parseFloat(spotQuote.data.bid);
-      const spotAsk = parseFloat(spotQuote.data.ask);
+      // Try database first (PersistentDataCollection updates every 1 second)
+      let futureQuote = await databaseQuoteService.getQuoteFromDatabase(normalizedBroker1, trade.broker1Symbol);
+      let spotQuote = await databaseQuoteService.getQuoteFromDatabase(normalizedBroker2, trade.broker2Symbol);
+      
+      // Only use API if database data is stale (> 30 seconds for TP calculations)
+      if (!databaseQuoteService.isQuoteFresh(futureQuote, 30000)) {
+        logger.warn(`Database quote stale for ${trade.broker1Symbol}, falling back to API`);
+        
+        const broker1Token = await this.getValidToken(trade.broker1, trade.broker1?.terminal === 'MT5');
+        const broker1ApiUrl = trade.broker1?.terminal === 'MT4' ? 
+          'https://mt4.premiumprofit.live' : 'https://mt5.premiumprofit.live';
+        
+        const futureQuoteResponse = await axios.get(`${broker1ApiUrl}/GetQuote`, {
+          params: { id: broker1Token, symbol: trade.broker1Symbol }
+        });
+        
+        futureQuote = {
+          bid: parseFloat(futureQuoteResponse.data.bid),
+          ask: parseFloat(futureQuoteResponse.data.ask)
+        };
+      }
+      
+      if (!databaseQuoteService.isQuoteFresh(spotQuote, 30000)) {
+        logger.warn(`Database quote stale for ${trade.broker2Symbol}, falling back to API`);
+        
+        const broker2Token = await this.getValidToken(trade.broker2, trade.broker2?.terminal === 'MT5');
+        const broker2ApiUrl = trade.broker2?.terminal === 'MT4' ? 
+          'https://mt4.premiumprofit.live' : 'https://mt5.premiumprofit.live';
+          
+        const spotQuoteResponse = await axios.get(`${broker2ApiUrl}/GetQuote`, {
+          params: { id: broker2Token, symbol: trade.broker2Symbol }
+        });
+        
+        spotQuote = {
+          bid: parseFloat(spotQuoteResponse.data.bid),
+          ask: parseFloat(spotQuoteResponse.data.ask)
+        };
+      }
+      
+      const futureBid = parseFloat(futureQuote.bid);
+      const futureAsk = parseFloat(futureQuote.ask);
+      const spotBid = parseFloat(spotQuote.bid);
+      const spotAsk = parseFloat(spotQuote.ask);
       
       // Calculate premium based on broker1Direction
       let premium;

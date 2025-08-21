@@ -34,7 +34,7 @@ async function cleanupExpiredData() {
     console.log('🔒 NO OTHER DATA WAS TOUCHED - USERS, ACCOUNT SETS, BROKERS ARE SAFE');
     
   } catch (error) {
-    console.error('❌ Cleanup error:', error);
+    console.error('❌ Cleanup error:', error.message);
   }
 }
 
@@ -46,7 +46,7 @@ if (require.main === module) {
       process.exit(0);
     })
     .catch(err => {
-      console.error('💥 Cleanup failed:', err);
+      console.error('💥 Cleanup failed:', err.message);
       process.exit(1);
     });
 }

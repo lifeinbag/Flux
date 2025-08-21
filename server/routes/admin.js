@@ -47,7 +47,7 @@ router.get('/users', auth, requireAdmin, async (req, res) => {
 
     res.json(usersWithCounts);
   } catch (err) {
-    console.error(err);
+    console.error('Admin route error:', err.message);
     res.status(500).send('Server error');
   }
 });
@@ -75,7 +75,7 @@ router.get('/users/:id/details', auth, requireAdmin, async (req, res) => {
 
     res.json(user);
   } catch (err) {
-    console.error(err);
+    console.error('Admin route error:', err.message);
     res.status(500).send('Server error');
   }
 });
@@ -101,7 +101,7 @@ router.put('/users/:id', auth, requireAdmin, async (req, res) => {
 
     res.json({ msg: 'User role updated successfully' });
   } catch (err) {
-    console.error(err);
+    console.error('Admin route error:', err.message);
     res.status(500).send('Server error');
   }
 });
@@ -124,7 +124,7 @@ router.delete('/users/:id', auth, requireAdmin, async (req, res) => {
     await user.destroy();
     res.json({ msg: 'User deleted successfully' });
   } catch (err) {
-    console.error(err);
+    console.error('Admin route error:', err.message);
     res.status(500).send('Server error');
   }
 });
@@ -196,7 +196,7 @@ router.post('/users/:id/account-sets', auth, requireAdmin, async (req, res) => {
       accountSet: newAccountSet
     });
   } catch (err) {
-    console.error(err);
+    console.error('Admin route error:', err.message);
     res.status(500).send('Server error');
   }
 });
@@ -237,7 +237,7 @@ router.post('/account-sets/:id/brokers', auth, requireAdmin, async (req, res) =>
       broker
     });
   } catch (err) {
-    console.error(err);
+    console.error('Admin route error:', err.message);
     res.status(500).send('Server error');
   }
 });
@@ -255,7 +255,7 @@ router.delete('/account-sets/:id', auth, requireAdmin, async (req, res) => {
     await accountSet.destroy();
     res.json({ msg: 'Account set deleted successfully' });
   } catch (err) {
-    console.error(err);
+    console.error('Admin route error:', err.message);
     res.status(500).send('Server error');
   }
 });
@@ -273,7 +273,7 @@ router.delete('/brokers/:id', auth, requireAdmin, async (req, res) => {
     await broker.destroy();
     res.json({ msg: 'Broker deleted successfully' });
   } catch (err) {
-    console.error(err);
+    console.error('Admin route error:', err.message);
     res.status(500).send('Server error');
   }
 });
@@ -305,7 +305,7 @@ router.put('/brokers/:id', auth, requireAdmin, async (req, res) => {
       broker
     });
   } catch (err) {
-    console.error(err);
+    console.error('Admin route error:', err.message);
     res.status(500).send('Server error');
   }
 });
@@ -357,7 +357,7 @@ router.get('/stats', auth, requireAdmin, async (req, res) => {
       recentAccountSets
     });
   } catch (err) {
-    console.error(err);
+    console.error('Admin route error:', err.message);
     res.status(500).send('Server error');
   }
 });
@@ -405,7 +405,7 @@ router.get('/system-health', auth, requireAdmin, async (req, res) => {
       }
     });
   } catch (err) {
-    console.error(err);
+    console.error('Admin route error:', err.message);
     res.status(500).send('Server error');
   }
 });
@@ -430,7 +430,7 @@ router.post('/broadcast', auth, requireAdmin, async (req, res) => {
       recipients: await User.count()
     });
   } catch (err) {
-    console.error(err);
+    console.error('Admin route error:', err.message);
     res.status(500).send('Server error');
   }
 });
@@ -455,7 +455,7 @@ router.get('/audit-log', auth, requireAdmin, async (req, res) => {
     
     res.json(auditLog);
   } catch (err) {
-    console.error(err);
+    console.error('Admin route error:', err.message);
     res.status(500).send('Server error');
   }
 });

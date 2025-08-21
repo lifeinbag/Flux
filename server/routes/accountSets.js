@@ -10,6 +10,7 @@ const logger = require('../utils/logger');
 const persistentDataCollectionService = require('../services/persistentDataCollection');
 const intelligentNormalizer = require('../utils/intelligentBrokerNormalizer');
 const { TokenManager } = require('../token-manager');
+const apiErrorMonitor = require('../services/apiErrorMonitor');
 
 const DB_SCHEMA = {
   BID_ASK: {
@@ -604,6 +605,96 @@ router.delete('/:setId/brokers/:brokerId', auth, async (req, res) => {
   } catch (err) {
     logger.error(`[/api/account-sets/${setId}/brokers/${brokerId}] DELETE error`, err.message);
     res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// Test broker connection endpoint
+router.post('/test-connection', auth, async (req, res) => {
+  try {
+    const { server, accountNumber, password, terminal } = req.body;
+    
+    if (!server || !accountNumber || !password || !terminal) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Missing required fields: server, accountNumber, password, terminal' 
+      });
+    }
+    
+    logger.info(`Testing connection for ${terminal} server: ${server}, account: ${accountNumber}`);
+    
+    try {
+      const isMT5 = terminal === 'MT5';
+      const token = await TokenManager.getToken(isMT5, server, accountNumber, password, null);
+      
+      res.json({
+        success: true,
+        message: 'Connection successful!',
+        data: {
+          server,
+          accountNumber,
+          terminal,
+          tokenReceived: !!token,
+          connectionStatus: 'connected'
+        }
+      });
+      
+    } catch (tokenError) {
+      logger.error(`Connection test failed for ${server}:`, tokenError.message);
+      
+      // Get recent API errors related to this connection attempt
+      const recentErrors = apiErrorMonitor.getRecentErrors(5)
+        .filter(error => 
+          error.context?.serverName === server || 
+          error.context?.account?.includes(accountNumber.substring(0, 4))
+        );
+      
+      const mostRecentError = recentErrors[0];
+      
+      let errorMessage = tokenError.message;
+      let errorDetails = null;
+      
+      if (mostRecentError) {
+        errorMessage = mostRecentError.userMessage || tokenError.message;
+        errorDetails = {
+          apiName: mostRecentError.apiName,
+          severity: mostRecentError.severity,
+          timestamp: mostRecentError.timestamp,
+          errorType: mostRecentError.context?.errorType,
+          brokerResponse: mostRecentError.context?.brokerResponse,
+          connectionIssue: mostRecentError.error.network || mostRecentError.error.cors || mostRecentError.error.timeout
+        };
+        
+        if (mostRecentError.context?.errorMessage) {
+          errorDetails.externalApiError = mostRecentError.context.errorMessage;
+        }
+      }
+      
+      res.status(400).json({
+        success: false,
+        error: errorMessage,
+        externalApiError: true, // Flag to indicate this is an external API issue
+        errorDetails,
+        troubleshooting: {
+          isExternalApiIssue: true,
+          possibleCauses: [
+            'External broker API server is down',
+            'CORS policy issues on external API',
+            'Network connectivity problems',
+            'Invalid server name or credentials',
+            'Broker server maintenance'
+          ],
+          recommendation: 'This appears to be an issue with the external broker API, not our application. Please check the external service status or try again later.'
+        }
+      });
+    }
+    
+  } catch (err) {
+    logger.error('[/api/account-sets/test-connection] POST error', err.message);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Internal server error',
+      externalApiError: false
+    });
   }
 });
 

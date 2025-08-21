@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { fetchSymbols, fetchQuote } from '../services/api';
+import symbolsCache from '../services/symbolsCache';
 import { connectWS, onMessage, subscribeToQuotes } from '../services/wsService';
 import { TrendingUp, TrendingDown, Zap, Target, Activity, BarChart3, Search, Settings, AlertTriangle } from 'lucide-react';
 import API from '../services/api';
@@ -171,27 +172,35 @@ export default function TradeExecution({
 
   // ─── Smart Symbol Detection ──────────────────────────────
   const handleSmartSymbolRefresh = useCallback(async (typedSymbol, symbolsList, brokerId, terminal) => {
-    if (typedSymbol.length > 2 && !symbolsList.includes(typedSymbol)) {
+    if (typedSymbol.length > 2) {
       try {
-        await API.post('/trading/refresh-symbols', { brokerId, terminal });
+        console.log('🔍 TradeExecution: Smart symbol search triggered for:', typedSymbol);
         
-        const res = await fetchSymbols(terminal, brokerId);
-        const raw = res.data?.symbols;
-        const list = Array.isArray(raw) ? raw : Object.values(raw || {});
-        const processed = list
-          .map(o => o.currency || o.symbol || o.name)
-          .filter(sym => sym && sym.trim());
-        
-        if (brokerId === broker1Id) {
-          setBroker1Symbols(processed);
-        } else if (brokerId === broker2Id) {
-          setBroker2Symbols(processed);
+        // Find the broker object to search
+        const brokerToSearch = brokers.find(b => (b.id || b._id) === brokerId);
+        if (brokerToSearch) {
+          // Use the new smart search functionality
+          const result = await symbolsCache.searchAndUpdateSymbol(typedSymbol, symbolsList, brokerToSearch);
+          
+          if (result.symbols.length > 0) {
+            if (brokerId === broker1Id) {
+              setBroker1Symbols(result.symbols);
+            } else if (brokerId === broker2Id) {
+              setBroker2Symbols(result.symbols);
+            }
+            
+            if (result.found) {
+              console.log(`✅ TradeExecution: Symbol "${typedSymbol}" found after search for ${terminal}`);
+            } else {
+              console.log(`⚠️ TradeExecution: Symbol "${typedSymbol}" not found, but cache updated for ${terminal}`);
+            }
+          }
         }
       } catch (err) {
-        // Smart refresh failed
+        console.error('❌ Smart symbol search failed:', err);
       }
     }
-  }, [broker1Id, broker2Id]);
+  }, [broker1Id, broker2Id, brokers]);
 
   // Load account sets if component is rendered standalone
   useEffect(() => {
@@ -442,16 +451,12 @@ export default function TradeExecution({
     };
   }, [selectedBroker1, selectedBroker2, accountSet?._id, accountSet?.symbolsLocked]);
 
-  // ✅ FIXED: Load symbols with proper error handling and state management
+  // ✅ OPTIMIZED: Load symbols using broker symbols cache
   useEffect(() => {
     console.log('🔄 TradeExecution: useEffect symbols loading triggered:', {
       accountSetId: accountSet?._id,
       accountSetName: accountSet?.name,
-      brokersLength: brokers.length,
-      broker1Id,
-      broker2Id,
-      broker1Terminal,
-      broker2Terminal
+      brokersLength: brokers.length
     });
 
     // Clear existing symbols when account set changes
@@ -465,174 +470,46 @@ export default function TradeExecution({
       return;
     }
 
-    if (!broker1Id || !broker2Id || !broker1Terminal || !broker2Terminal) {
-      console.log('⚠️ TradeExecution: Missing broker info:', {
-        broker1Id, broker2Id, broker1Terminal, broker2Terminal
-      });
-      
-      // ✅ SIMPLE FALLBACK: If IDs are missing, add some basic symbols to show something
-      if (!broker1Id) {
-        setBroker1Symbols(['EURUSD', 'GBPUSD', 'USDJPY', 'GOLD', 'SILVER']); // Mock symbols
-        console.log('📝 Added mock symbols for Broker 1');
-      }
-      if (!broker2Id) {
-        setBroker2Symbols(['EURUSD', 'GBPUSD', 'USDJPY', 'GOLD', 'SILVER']); // Mock symbols
-        console.log('📝 Added mock symbols for Broker 2');
-      }
-      
-      setLoadingSymbols(false);
-      return;
-    }
-
-    const loadSymbolsWithFallback = async () => {
+    const loadSymbolsOptimized = async () => {
       setLoadingSymbols(true);
       setError('');
       
-      console.log('🚀 TradeExecution: Starting symbol loading for:', { 
+      console.log('🚀 TradeExecution: Starting optimized symbol loading for:', {
         accountSetId: accountSet._id,
-        accountSetName: accountSet.name,
-        broker1: `${broker1Terminal} (${broker1Id})`,
-        broker2: `${broker2Terminal} (${broker2Id})`
+        accountSetName: accountSet.name
       });
 
       try {
-        // ✅ Try batch API first
-        console.log('📦 Attempting batch symbols API...');
-        const { fetchMultipleSymbols } = await import('../services/api');
+        // Use the optimized symbols cache service
+        const result = await symbolsCache.getSymbolsForAccountSet(accountSet);
         
-        const batchRes = await fetchMultipleSymbols([
-          { terminal: broker1Terminal, brokerId: broker1Id },
-          { terminal: broker2Terminal, brokerId: broker2Id }
-        ]);
-
-        console.log('📦 Batch API response:', batchRes.data);
-
-        if (batchRes.data.success && batchRes.data.data) {
-          const [broker1Result, broker2Result] = batchRes.data.data;
+        if (result.success) {
+          setBroker1Symbols(result.broker1Symbols);
+          setBroker2Symbols(result.broker2Symbols);
+          console.log(`✅ TradeExecution: Loaded symbols via cache - Broker1: ${result.broker1Symbols.length}, Broker2: ${result.broker2Symbols.length}`);
           
-          console.log('📊 Batch results:', { broker1Result, broker2Result });
-
-          let symbols1 = [];
-          let symbols2 = [];
-
-          // Process Broker 1 symbols
-          if (broker1Result.success && broker1Result.data?.symbols) {
-            const raw1 = broker1Result.data.symbols;
-            symbols1 = (Array.isArray(raw1) ? raw1 : Object.values(raw1 || {}))
-              .map(o => typeof o === 'string' ? o : o.currency || o.symbol || o.name)
-              .filter(sym => sym && sym.trim());
-            console.log(`✅ Broker 1 (${broker1Terminal}): ${symbols1.length} symbols loaded via ${broker1Result.data.source}`);
-          } else {
-            console.warn(`⚠️ Broker 1 failed:`, broker1Result);
+          if (!result.broker1Symbols.length && !result.broker2Symbols.length) {
+            setError('No symbols found in cache. Symbols may still be loading in the background.');
           }
-
-          // Process Broker 2 symbols
-          if (broker2Result.success && broker2Result.data?.symbols) {
-            const raw2 = broker2Result.data.symbols;
-            symbols2 = (Array.isArray(raw2) ? raw2 : Object.values(raw2 || {}))
-              .map(o => typeof o === 'string' ? o : o.currency || o.symbol || o.name)
-              .filter(sym => sym && sym.trim());
-            console.log(`✅ Broker 2 (${broker2Terminal}): ${symbols2.length} symbols loaded via ${broker2Result.data.source}`);
-          } else {
-            console.warn(`⚠️ Broker 2 failed:`, broker2Result);
-          }
-
-          setBroker1Symbols(symbols1);
-          setBroker2Symbols(symbols2);
-
-          // If batch partially failed, try individual fallback for failed brokers
-          if (!broker1Result.success && broker1Id && broker1Terminal) {
-            console.log('🔄 Fallback: Loading Broker 1 individually...');
-            try {
-              const res1 = await fetchSymbols(broker1Terminal, broker1Id);
-              if (res1.data?.symbols) {
-                const raw1 = res1.data.symbols;
-                const fallback1 = (Array.isArray(raw1) ? raw1 : Object.values(raw1 || {}))
-                  .map(o => typeof o === 'string' ? o : o.currency || o.symbol || o.name)
-                  .filter(sym => sym && sym.trim());
-                console.log(`✅ Broker 1 fallback: ${fallback1.length} symbols loaded`);
-                setBroker1Symbols(fallback1);
-              }
-            } catch (err) {
-              console.error('❌ Broker 1 fallback failed:', err.message);
-            }
-          }
-
-          if (!broker2Result.success && broker2Id && broker2Terminal) {
-            console.log('🔄 Fallback: Loading Broker 2 individually...');
-            try {
-              const res2 = await fetchSymbols(broker2Terminal, broker2Id);
-              if (res2.data?.symbols) {
-                const raw2 = res2.data.symbols;
-                const fallback2 = (Array.isArray(raw2) ? raw2 : Object.values(raw2 || {}))
-                  .map(o => typeof o === 'string' ? o : o.currency || o.symbol || o.name)
-                  .filter(sym => sym && sym.trim());
-                console.log(`✅ Broker 2 fallback: ${fallback2.length} symbols loaded`);
-                setBroker2Symbols(fallback2);
-              }
-            } catch (err) {
-              console.error('❌ Broker 2 fallback failed:', err.message);
-            }
-          }
-
         } else {
-          // Batch API completely failed - use individual requests
-          console.warn('⚠️ Batch API failed completely, using individual requests:', batchRes.data);
-          
-          let symbols1 = [], symbols2 = [];
-
-          // Load symbols for broker 1
-          if (broker1Id && broker1Terminal) {
-            try {
-              console.log(`🔄 Individual: Loading ${broker1Terminal} symbols...`);
-              const res = await fetchSymbols(broker1Terminal, broker1Id);
-              if (res.data?.symbols) {
-                const raw = res.data.symbols;
-                symbols1 = (Array.isArray(raw) ? raw : Object.values(raw || {}))
-                  .map(o => typeof o === 'string' ? o : o.currency || o.symbol || o.name)
-                  .filter(sym => sym && sym.trim());
-                console.log(`✅ Individual Broker 1: ${symbols1.length} symbols loaded`);
-              }
-            } catch (err) {
-              console.error('❌ Individual Broker 1 failed:', err.message);
-            }
-          }
-
-          // Load symbols for broker 2
-          if (broker2Id && broker2Terminal) {
-            try {
-              console.log(`🔄 Individual: Loading ${broker2Terminal} symbols...`);
-              const res = await fetchSymbols(broker2Terminal, broker2Id);
-              if (res.data?.symbols) {
-                const raw = res.data.symbols;
-                symbols2 = (Array.isArray(raw) ? raw : Object.values(raw || {}))
-                  .map(o => typeof o === 'string' ? o : o.currency || o.symbol || o.name)
-                  .filter(sym => sym && sym.trim());
-                console.log(`✅ Individual Broker 2: ${symbols2.length} symbols loaded`);
-              }
-            } catch (err) {
-              console.error('❌ Individual Broker 2 failed:', err.message);
-            }
-          }
-
-          setBroker1Symbols(symbols1);
-          setBroker2Symbols(symbols2);
+          console.error('❌ TradeExecution: Failed to load symbols:', result.error);
+          setError(result.error || 'Failed to load symbols');
         }
       } catch (err) {
-        console.error('❌ TradeExecution: Complete symbol loading failure:', err);
+        console.error('❌ TradeExecution: Symbol loading error:', err);
         setError(`Failed to load symbols: ${err.message}`);
       } finally {
         setLoadingSymbols(false);
-        console.log('🏁 TradeExecution: Symbol loading complete');
+        console.log('🏁 TradeExecution: Optimized symbol loading complete');
       }
     };
     
-    loadSymbolsWithFallback();
+    loadSymbolsOptimized();
 
     return () => {
       console.log('🧹 TradeExecution: Cleaning up symbol loading effect');
     };
-  }, [accountSet?._id, accountSet?.name, broker1Id, broker2Id, broker1Terminal, broker2Terminal]);
+  }, [accountSet?._id, accountSet?.name]);
 
   const onBroker1Change = async (e) => {
     const v = e.target.value;

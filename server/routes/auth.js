@@ -45,7 +45,7 @@ router.post('/signup', async (req, res) => {
     const token   = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: '7d' });
     res.json({ token });
   } catch (err) {
-    console.error(err);
+    console.error('Auth error:', err.message);
     res.status(500).send('Server error');
   }
 });
@@ -67,7 +67,7 @@ router.post('/login', async (req, res) => {
     const token   = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: '7d' });
     res.json({ token });
   } catch (err) {
-    console.error(err);
+    console.error('Auth error:', err.message);
     res.status(500).send('Server error');
   }
 });
@@ -110,7 +110,7 @@ router.post('/reset-password', async (req, res) => {
 
     res.json({ msg: 'Password reset successful' });
   } catch (err) {
-    console.error(err);
+    console.error('Auth error:', err.message);
     res.status(500).send('Server error');
   }
 });

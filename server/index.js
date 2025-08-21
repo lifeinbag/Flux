@@ -18,6 +18,9 @@ const pendingOrderMonitor = require('./services/pendingOrderMonitor');
 const tradeStatusMonitor = require('./services/tradeStatusMonitor');
 const realtimeTpMonitor = require('./services/realtimeTpMonitor');
 const databaseCleanupService = require('./services/databaseCleanupService');
+const apiErrorMonitor = require('./services/apiErrorMonitor');
+
+
 
 const API_TIMEOUT = 25000;
 const httpsAgent = new https.Agent({ 
@@ -42,12 +45,33 @@ const mt5Client = axios.create({
 async function makeAPIRequest(path, options = {}, retries = 2) {
   const { isMT5 = false } = options;
   const client = isMT5 ? mt5Client : mt4Client;
+  const apiName = isMT5 ? 'MT5_API' : 'MT4_API';
+  const startTime = Date.now();
   
   for (let attempt = 1; attempt <= retries + 1; attempt++) {
     try {
       const { data } = await client.get(path);
+      
+      // Log successful API call
+      const responseTime = Date.now() - startTime;
+      apiErrorMonitor.logApiSuccess(apiName, `${client.defaults.baseURL}${path}`, responseTime);
+      
       return data;
     } catch (error) {
+      // Enhanced error context with response data
+      const errorContext = {
+        attempt,
+        maxRetries: retries + 1,
+        path,
+        errorCode: error.code,
+        errorStatus: error.response?.status,
+        errorMessage: error.response?.data || error.message,
+        httpMethod: 'GET'
+      };
+      
+      // Log API error with detailed context
+      apiErrorMonitor.logApiError(apiName, `${client.defaults.baseURL}${path}`, error, errorContext);
+      
       const isRetryable = error.code === 'ECONNABORTED' || 
                          error.code === 'ETIMEDOUT' ||
                          error.code === 'ECONNRESET';
@@ -153,7 +177,45 @@ app.use('/api/account-sets', require('./routes/accountSets'));
 app.use('/api/trading', require('./routes/status'));
 app.use('/api/trading', require('./middleware/auth'), require('./routes/trading'));
 app.use('/api/mt4mt5', require('./routes/mt4mt5Proxy'));
+
+// API Status and Error Monitoring Routes
+app.get('/api/status/apis', (req, res) => {
+  res.json({
+    success: true,
+    data: {
+      statuses: apiErrorMonitor.getAllApiStatuses(),
+      recentErrors: apiErrorMonitor.getRecentErrors(5)
+    }
+  });
+});
+
+app.get('/api/status/api-errors', (req, res) => {
+  const limit = parseInt(req.query.limit) || 20;
+  res.json({
+    success: true,
+    data: apiErrorMonitor.getRecentErrors(limit)
+  });
+});
+
+app.post('/api/status/health-check', async (req, res) => {
+  try {
+    const results = await apiErrorMonitor.performHealthChecks();
+    res.json({
+      success: true,
+      data: results
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
 app.use('/api', premiumRoutes);
+
+const symbolsRouter = require('./routes/symbols');
+app.use('/api/symbols', symbolsRouter);
+
 
 // Health check
 app.get('/', (req, res) => {
@@ -567,7 +629,7 @@ wss.on('connection', (ws, req) => {
           }));
       }
     } catch (error) {
-      console.error('❌ WebSocket message parsing error:', error);
+      console.error('❌ WebSocket message parsing error:', error.message);
       ws.send(JSON.stringify({
         type: 'error',
         data: { message: 'Invalid message format' }
@@ -601,7 +663,7 @@ wss.on('connection', (ws, req) => {
   });
 
   ws.on('error', (error) => {
-    console.error('❌ WebSocket error:', error);
+    console.error('❌ WebSocket error:', error.message);
   });
   
   ws.on('pong', () => {
@@ -669,7 +731,7 @@ async function handleSubscribeSet(ws, msg) {
     }
     
   } catch (error) {
-    console.error('❌ Error in handleSubscribeSet:', error);
+    console.error('❌ Error in handleSubscribeSet:', error.message);
     ws.send(JSON.stringify({
       type: 'error',
       data: { message: 'Failed to subscribe to account set' }
@@ -743,8 +805,8 @@ async function handleSubscribeQuote(ws, msg) {
         let futureQuote = await databaseQuoteService.getQuoteFromDatabase(normalizedFuture, futureSymbol);
         let spotQuote = await databaseQuoteService.getQuoteFromDatabase(normalizedSpot, spotSymbol);
 
-        // Only call API if database cache is stale (> 3 seconds for WebSocket real-time)
-        if (!databaseQuoteService.isQuoteFresh(futureQuote, 3000)) {
+        // Only call API if database cache is stale (> 10 seconds - PersistentDataCollection updates every 5s)
+        if (!databaseQuoteService.isQuoteFresh(futureQuote, 10000)) {
           console.log('🌐 Fetching fresh future quote for WebSocket - cache stale');
           try {
             const futureToken = await getValidBrokerToken(futureBroker);
@@ -757,13 +819,34 @@ async function handleSubscribeQuote(ws, msg) {
               };
             }
           } catch (apiErr) {
-            console.log('⚠️ API failed, using stale cache for future quote');
+            // 🚨 CRITICAL FIX: Handle token refresh for WebSocket quote fetching
+            if (apiErr.message === 'TOKEN_INVALID') {
+              console.log('🔄 Token invalid for WebSocket future quote, refreshing and retrying...');
+              try {
+                const freshToken = await getValidBrokerToken(futureBroker, true);
+                const retryQuote = await fetchQuote(freshToken, futureSymbol, futureBroker.terminal, futureBroker.id);
+                if (retryQuote) {
+                  futureQuote = {
+                    ...retryQuote,
+                    source: 'api_retry',
+                    timestamp: new Date()
+                  };
+                  console.log('✅ Future quote retry successful after token refresh');
+                } else {
+                  console.log('⚠️ Future quote retry failed, using stale cache');
+                }
+              } catch (retryErr) {
+                console.log('⚠️ Future quote retry failed after token refresh:', retryErr.message);
+              }
+            } else {
+              console.log('⚠️ API failed for future quote, using stale cache:', apiErr.message);
+            }
           }
         } else {
           console.log(`💾 Using cached future quote - age: ${databaseQuoteService.getQuoteAgeMs(futureQuote)}ms`);
         }
 
-        if (!databaseQuoteService.isQuoteFresh(spotQuote, 3000)) {
+        if (!databaseQuoteService.isQuoteFresh(spotQuote, 10000)) {
           console.log('🌐 Fetching fresh spot quote for WebSocket - cache stale');
           try {
             const spotToken = await getValidBrokerToken(spotBroker);
@@ -776,7 +859,28 @@ async function handleSubscribeQuote(ws, msg) {
               };
             }
           } catch (apiErr) {
-            console.log('⚠️ API failed, using stale cache for spot quote');
+            // 🚨 CRITICAL FIX: Handle token refresh for WebSocket spot quote fetching
+            if (apiErr.message === 'TOKEN_INVALID') {
+              console.log('🔄 Token invalid for WebSocket spot quote, refreshing and retrying...');
+              try {
+                const freshToken = await getValidBrokerToken(spotBroker, true);
+                const retryQuote = await fetchQuote(freshToken, spotSymbol, spotBroker.terminal, spotBroker.id);
+                if (retryQuote) {
+                  spotQuote = {
+                    ...retryQuote,
+                    source: 'api_retry',
+                    timestamp: new Date()
+                  };
+                  console.log('✅ Spot quote retry successful after token refresh');
+                } else {
+                  console.log('⚠️ Spot quote retry failed, using stale cache');
+                }
+              } catch (retryErr) {
+                console.log('⚠️ Spot quote retry failed after token refresh:', retryErr.message);
+              }
+            } else {
+              console.log('⚠️ API failed for spot quote, using stale cache:', apiErr.message);
+            }
           }
         } else {
           console.log(`💾 Using cached spot quote - age: ${databaseQuoteService.getQuoteAgeMs(spotQuote)}ms`);
@@ -1281,7 +1385,7 @@ async function broadcastBalanceUpdates(accountSetId) {
       }
     }
   } catch (error) {
-    console.error('❌ Error in broadcastBalanceUpdates:', error);
+    console.error('❌ Error in broadcastBalanceUpdates:', error.message);
   }
 }
 
@@ -1309,6 +1413,16 @@ function broadcastCustomData(accountSetId, type, data) {
 // Export for other services to use
 app.locals.wss = wss;
 app.locals.broadcastToAccountSet = broadcastToAccountSet;
+
+// Add global broadcast function for API errors
+app.locals.broadcast = function(message) {
+  const messageStr = JSON.stringify(message);
+  wss.clients.forEach(client => {
+    if (client.readyState === WebSocket.OPEN) {
+      client.send(messageStr);
+    }
+  });
+};
 app.locals.broadcastCustomData = broadcastCustomData;
 
 // ==================== SERVER STARTUP ====================
@@ -1373,10 +1487,16 @@ syncDatabase()
     
     server.listen(PORT, () => {
       console.log(`Server listening on port ${PORT}`);
+      
+      // Start API health monitoring
+      setTimeout(() => {
+        apiErrorMonitor.startHealthChecking(30000); // Check every 30 seconds
+        logger.info('🏥 API Health Monitoring started');
+      }, 5000); // Wait 5 seconds after server start
     });
   })
   .catch(err => {
-    console.error('Database connection error:', err);
+    console.error('Database connection error:', err.message);
     process.exit(1);
   });
 
