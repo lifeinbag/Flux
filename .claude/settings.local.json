@@ -25,7 +25,8 @@
       "Bash(npx eslint:*)",
       "WebFetch(domain:mt4.premiumprofit.live)",
       "WebFetch(domain:mt5.premiumprofit.live)",
-      "Bash(npx sequelize-cli:*)"
+      "Bash(npx sequelize-cli:*)",
+      "Bash(kill:*)"
     ],
     "deny": []
   }

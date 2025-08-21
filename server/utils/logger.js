@@ -49,7 +49,9 @@ class Logger {
     
     if (data) {
       if (typeof data === 'object') {
-        logEntry += `\nData: ${JSON.stringify(data, null, 2)}`;
+        // Safely handle error objects to avoid circular references
+        const safeData = data.message || data.error || data.code || 'Object details logged';
+        logEntry += `\nData: ${safeData}`;
       } else {
         logEntry += `\nData: ${data}`;
       }
@@ -102,13 +104,15 @@ class Logger {
   }
 
   error(message, data = null) {
-    this.winston.error(message, data);
-    this.writeToFile(this.formatMessage('ERROR', message, data));
+    const safeData = data && typeof data === 'object' && data.message ? data.message : data;
+    this.winston.error(message, safeData);
+    this.writeToFile(this.formatMessage('ERROR', message, safeData));
   }
 
   warn(message, data = null) {
-    this.winston.warn(message, data);
-    this.writeToFile(this.formatMessage('WARN', message, data));
+    const safeData = data && typeof data === 'object' && data.message ? data.message : data;
+    this.winston.warn(message, safeData);
+    this.writeToFile(this.formatMessage('WARN', message, safeData));
   }
 
   success(message, data = null) {
@@ -182,7 +186,7 @@ class Logger {
   }
 
   wsError(err) {
-    this.error('[WS] ⚠ error', { err });
+    this.error('[WS] ⚠ error', err.message || 'WebSocket error');
   }
 }
 
