@@ -270,55 +270,46 @@ class ApiErrorMonitor {
       try {
         const startTime = Date.now();
         
-        // Use ConnectEx with real credentials for proper health check
-        let healthCheckUrl = `${endpoint}/ConnectEx`;
-        let params = {};
-        
-        if (apiName === 'MT4_API' || apiName === 'MT4_FLUX') {
-          params = {
-            user: process.env.MT4_TEST_USER || 'test_user',
-            password: process.env.MT4_TEST_PASSWORD || 'test_pass',
-            server: process.env.MT4_TEST_SERVER || 'test_server'
-          };
-        } else if (apiName === 'MT5_API' || apiName === 'MT5_FLUX') {
-          params = {
-            user: process.env.MT5_TEST_USER || 'test_user',
-            password: process.env.MT5_TEST_PASSWORD || 'test_pass', 
-            server: process.env.MT5_TEST_SERVER || 'test_server'
-          };
-        }
-        
-        const response = await axios.get(healthCheckUrl, {
-          params,
+        // Simple health check - just check if API is reachable
+        // Don't try to authenticate, just ping the base endpoint
+        const response = await axios.get(endpoint, {
           timeout: 10000,
-          headers: { 'User-Agent': 'FluxNetwork-HealthCheck' }
+          headers: { 'User-Agent': 'FluxNetwork-HealthCheck' },
+          validateStatus: function (status) {
+            // Accept any response as "API is reachable"
+            return status < 500; // Only treat 5xx as failures
+          }
         });
         
         const responseTime = Date.now() - startTime;
         
         // Check if response indicates success (any response means API is reachable)
         let status = 'online';
-        if (response.data && typeof response.data === 'string') {
-          const data = response.data.trim();
-          if (data.includes('[error]') && !data.includes('Invalid account') && !data.includes('Wrong password')) {
-            // Server errors that aren't auth-related indicate API issues
-            status = 'degraded';
-          }
+        if (response.status >= 400 && response.status < 500) {
+          // 4xx responses mean API is reachable but might have client-side issues
+          status = 'online';
         }
         
         this.logApiSuccess(apiName, endpoint, responseTime);
         results[apiName] = { status, responseTime, lastResponse: response.data?.substring(0, 100) };
         
       } catch (error) {
-        // Distinguish between connection errors and auth errors
+        // Distinguish between connection errors and response errors
         let status = 'error';
-        if (error.response?.status === 200 || 
-            (error.message && (error.message.includes('Invalid account') || error.message.includes('Wrong password')))) {
-          // Auth errors mean API is online but credentials are wrong
-          status = 'online-auth-error';
+        if (error.response && error.response.status < 500) {
+          // 4xx errors mean API is reachable but request format issues
+          status = 'online';
+        } else if (error.code === 'ENOTFOUND' || error.code === 'ECONNREFUSED') {
+          // Network errors mean API is unreachable
+          status = 'offline';
         }
         
-        this.logApiError(apiName, endpoint, error, { type: 'health_check' });
+        // Only log as error if it's actually unreachable
+        if (status !== 'online') {
+          this.logApiError(apiName, endpoint, error, { type: 'health_check' });
+        } else {
+          this.logApiSuccess(apiName, endpoint);
+        }
         results[apiName] = { status, error: error.message };
       }
     }
