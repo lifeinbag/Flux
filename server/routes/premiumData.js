@@ -150,7 +150,7 @@ function startPremiumRecording(tableName, accountSetId) {
   console.log(`Started premium recording for ${tableName}, account set ${accountSetId}`);
 }
 
-// Record premium data point (optimized with token reuse)
+// ✅ OPTIMIZED: Record premium data using database-first approach
 async function recordPremiumData(tableName, accountSetId) {
   try {
     const setId = typeof accountSetId === 'object' ? 
@@ -162,6 +162,9 @@ async function recordPremiumData(tableName, accountSetId) {
     }
     
     const { AccountSet } = require('../models/AccountSet');
+    const databaseQuoteService = require('../services/databaseQuoteService');
+    const intelligentNormalizer = require('../utils/intelligentBrokerNormalizer');
+    
     const accountSet = await AccountSet.findByPk(setId, { include: ['brokers'] });
     
     if (!accountSet?.futureSymbol || !accountSet?.spotSymbol || accountSet.brokers.length < 2) {
@@ -171,41 +174,78 @@ async function recordPremiumData(tableName, accountSetId) {
     
     const [broker1, broker2] = accountSet.brokers;
     
-    // Use optimized token management
-    await ensureBrokerTokens(broker1, broker2);
-    
-    if (!broker1.token || !broker2.token) {
-      console.log(`⚠️ Skipping premium recording - Missing tokens for AccountSet ${setId}`);
-      return;
+    // Get normalized broker names for database lookup
+    const normalizedBroker1 = await intelligentNormalizer.normalizeBrokerName(
+      broker1.brokerName, broker1.server, broker1.companyName
+    );
+    const normalizedBroker2 = await intelligentNormalizer.normalizeBrokerName(
+      broker2.brokerName, broker2.server, broker2.companyName
+    );
+
+    // ✅ DATABASE-FIRST: Get quotes from database cache
+    let futureQuote = await databaseQuoteService.getQuoteFromDatabase(normalizedBroker1, accountSet.futureSymbol);
+    let spotQuote = await databaseQuoteService.getQuoteFromDatabase(normalizedBroker2, accountSet.spotSymbol);
+
+    // Only call API if database cache is stale (> 10 seconds for premium recording)
+    if (!databaseQuoteService.isQuoteFresh(futureQuote, 10000)) {
+      console.log(`🌐 Fetching fresh future quote for premium recording - cache stale`);
+      await ensureBrokerTokens(broker1, broker2);
+      if (broker1.token) {
+        const apiQuote = await fetchQuote(broker1.token, accountSet.futureSymbol).catch(() => null);
+        if (apiQuote) {
+          futureQuote = {
+            bid: apiQuote.Bid,
+            ask: apiQuote.Ask,
+            symbol: accountSet.futureSymbol,
+            timestamp: new Date(),
+            source: 'api'
+          };
+        }
+      }
+    } else {
+      console.log(`💾 Using cached future quote for premium - age: ${databaseQuoteService.getQuoteAgeMs(futureQuote)}ms`);
+    }
+
+    if (!databaseQuoteService.isQuoteFresh(spotQuote, 10000)) {
+      console.log(`🌐 Fetching fresh spot quote for premium recording - cache stale`);
+      await ensureBrokerTokens(broker1, broker2);
+      if (broker2.token) {
+        const apiQuote = await fetchQuote(broker2.token, accountSet.spotSymbol).catch(() => null);
+        if (apiQuote) {
+          spotQuote = {
+            bid: apiQuote.Bid,
+            ask: apiQuote.Ask,
+            symbol: accountSet.spotSymbol,
+            timestamp: new Date(),
+            source: 'api'
+          };
+        }
+      }
+    } else {
+      console.log(`💾 Using cached spot quote for premium - age: ${databaseQuoteService.getQuoteAgeMs(spotQuote)}ms`);
     }
     
-    // Fetch quotes
-    const [futureQuote, spotQuote] = await Promise.all([
-      fetchQuote(broker1.token, accountSet.futureSymbol).catch(() => null),
-      fetchQuote(broker2.token, accountSet.spotSymbol).catch(() => null)
-    ]);
-    
     if (!futureQuote || !spotQuote) {
-      console.log(`⚠️ Failed to fetch quotes for ${setId}`);
+      console.log(`⚠️ Failed to get quotes for premium recording ${setId}`);
       return;
     }
     
     // Calculate premiums
-    const buyPremium = futureQuote.Ask - spotQuote.Bid;
-    const sellPremium = futureQuote.Bid - spotQuote.Ask;
+    const buyPremium = futureQuote.ask - spotQuote.bid;
+    const sellPremium = futureQuote.bid - spotQuote.ask;
     
-    // Insert data using standardized schema (snake_case columns like dataCollectionManager)
+    // Insert data using standardized schema
     await sequelize.query(
       `INSERT INTO "${tableName}" 
        (account_set_id, future_bid, future_ask, spot_bid, spot_ask, buy_premium, sell_premium)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
       {
-        replacements: [setId, futureQuote.Bid, futureQuote.Ask, spotQuote.Bid, spotQuote.Ask, buyPremium, sellPremium],
+        replacements: [setId, futureQuote.bid, futureQuote.ask, spotQuote.bid, spotQuote.ask, buyPremium, sellPremium],
         type: Sequelize.QueryTypes.INSERT
       }
     );
     
-    console.log(`📊 Premium data recorded for ${tableName}: buy=${buyPremium?.toFixed(5)}, sell=${sellPremium?.toFixed(5)}`);
+    console.log(`📊 Premium recorded: buy=${buyPremium?.toFixed(5)}, sell=${sellPremium?.toFixed(5)} (${futureQuote.source || 'cache'}/${spotQuote.source || 'cache'})`);
   } catch (err) {
     console.error(`Error in recordPremiumData for ${tableName}:`, err);
   }
@@ -222,13 +262,17 @@ function stopPremiumRecording(tableName, accountSetId) {
   }
 }
 
-// GET premium data for a company/account set
+// ✅ OPTIMIZED: GET premium data using database service
 router.get('/:companyName/:accountSetId', auth, async (req, res) => {
   try {
     const { companyName, accountSetId } = req.params;
+    const { limit = 1000 } = req.query;
+    
+    const databaseQuoteService = require('../services/databaseQuoteService');
     const normalized = companyName.toLowerCase().replace(/[^a-z0-9]/g, '_');
     const likePattern = `premium_${normalized}%`;
     
+    // Find premium table
     const tables = await sequelize.query(
       `SELECT table_name FROM information_schema.tables
        WHERE table_schema = 'public' AND table_name LIKE :pattern
@@ -248,18 +292,19 @@ router.get('/:companyName/:accountSetId', auth, async (req, res) => {
     }
     
     const tableName = tables[0].table_name;
-    const data = await sequelize.query(
-      `SELECT * FROM "${tableName}"
-       WHERE account_set_id = ?
-       ORDER BY timestamp DESC 
-       LIMIT 1000`,
-      {
-        replacements: [accountSetId],
-        type: Sequelize.QueryTypes.SELECT
-      }
-    );
     
-    res.json({ success: true, data });
+    // Use database service for efficient data retrieval
+    const data = await databaseQuoteService.getRecentPremiumData(tableName, accountSetId, parseInt(limit));
+    
+    res.json({ 
+      success: true, 
+      data,
+      meta: {
+        tableName,
+        recordCount: data.length,
+        source: 'database'
+      }
+    });
   } catch (err) {
     console.error('Error fetching premium data:', err);
     res.status(500).json({ success: false, error: 'Failed to fetch premium data' });

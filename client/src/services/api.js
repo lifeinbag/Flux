@@ -90,12 +90,35 @@ export function fetchSymbols(terminal, brokerId) {
 }
 
 /**
- * Fetch a single quote by symbol for a broker.
+ * ✅ OPTIMIZED: Fetch a single quote by symbol for a broker (uses database-first approach)
  */
 export function fetchQuote(symbol, terminal, brokerId) {
   return API.get(`/trading/quote/${encodeURIComponent(symbol)}`, {
     params: { terminal, id: brokerId },
   });
+}
+
+/**
+ * ✅ NEW: Get premium data from database-first service
+ */
+export function fetchPremiumData(companyName, accountSetId, limit = 100) {
+  return API.get(`/premium-data/${companyName}/${accountSetId}`, {
+    params: { limit }
+  });
+}
+
+/**
+ * ✅ NEW: Get multiple quotes efficiently using database cache
+ */
+export function fetchMultipleQuotes(requests) {
+  return API.post('/trading/quotes/batch', { requests });
+}
+
+/**
+ * ✅ NEW: Fetch symbols for multiple brokers efficiently using cache
+ */
+export function fetchMultipleSymbols(requests) {
+  return API.post('/trading/symbols/batch', { requests });
 }
 
 // ——— DEPRECATED FUNCTIONS (DO NOT USE) ——————————————————————

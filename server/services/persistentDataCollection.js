@@ -116,12 +116,35 @@ class PersistentDataCollectionService {
     } = config;
 
     try {
-      const [futureQuote, spotQuote] = await Promise.all([
-        this.fetchQuoteWithRetry(accountSetId, futureSymbol, 1),
-        this.fetchQuoteWithRetry(accountSetId, spotSymbol, 2)
-      ]);
+      // ✅ DATABASE-FIRST APPROACH: Check cache before API calls
+      let futureQuote = await this.getQuoteFromBidAskTable(company1, futureSymbol);
+      let spotQuote = await this.getQuoteFromBidAskTable(company2, spotSymbol);
 
-      if (!futureQuote || !spotQuote) return;
+      // Only fetch from API if database cache is stale (> 5 seconds)
+      if (!this.isQuoteFresh(futureQuote, 5000)) {
+        logger.info(`🌐 Fetching fresh future quote for ${company1}/${futureSymbol} - cache stale`);
+        futureQuote = await this.fetchQuoteWithRetry(accountSetId, futureSymbol, 1);
+        if (futureQuote) {
+          await this.storeBidAskData(company1, futureSymbol, futureQuote, futureQuote.token, futureQuote.terminal);
+        }
+      } else {
+        logger.info(`💾 Using cached future quote for ${company1}/${futureSymbol} - age: ${this.getQuoteAgeMs(futureQuote)}ms`);
+      }
+
+      if (!this.isQuoteFresh(spotQuote, 5000)) {
+        logger.info(`🌐 Fetching fresh spot quote for ${company2}/${spotSymbol} - cache stale`);
+        spotQuote = await this.fetchQuoteWithRetry(accountSetId, spotSymbol, 2);
+        if (spotQuote) {
+          await this.storeBidAskData(company2, spotSymbol, spotQuote, spotQuote.token, spotQuote.terminal);
+        }
+      } else {
+        logger.info(`💾 Using cached spot quote for ${company2}/${spotSymbol} - age: ${this.getQuoteAgeMs(spotQuote)}ms`);
+      }
+
+      if (!futureQuote || !spotQuote) {
+        logger.warn(`⚠️ Missing quotes for premium calculation: future=${!!futureQuote}, spot=${!!spotQuote}`);
+        return;
+      }
 
       const buyPremium = futureQuote.ask - spotQuote.bid;
       const sellPremium = futureQuote.bid - spotQuote.ask;
@@ -144,15 +167,13 @@ class PersistentDataCollectionService {
         }
       );
 
-      // Store bid/ask data with trade session check
-      await this.storeBidAskData(company1, futureSymbol, futureQuote, futureQuote.token, futureQuote.terminal);
-      await this.storeBidAskData(company2, spotSymbol, spotQuote, spotQuote.token, spotQuote.terminal);
-
       // Update collection status
       const key = `${company1}_${company2}_${futureSymbol}_${spotSymbol}_${accountSetId}`;
       if (this.activeCollections.has(key)) {
         this.activeCollections.get(key).lastUpdate = new Date();
       }
+
+      logger.info(`📊 Premium calculated: buy=${buyPremium.toFixed(5)}, sell=${sellPremium.toFixed(5)} (${futureQuote.source || 'cache'}/${spotQuote.source || 'cache'})`);
 
     } catch (error) {
       logger.error('Error collecting premium data:', error.message);
@@ -275,11 +296,63 @@ class PersistentDataCollectionService {
         bid: parseFloat(response.data.bid),
         ask: parseFloat(response.data.ask),
         symbol,
-        timestamp: new Date()
+        timestamp: new Date(),
+        source: 'api'
       };
     }
 
     return null;
+  }
+
+  // ✅ NEW: Get quote from database bid/ask table
+  async getQuoteFromBidAskTable(brokerName, symbol) {
+    try {
+      const tableName = `bid_ask_${brokerName}`;
+      
+      const [result] = await sequelize.query(`
+        SELECT symbol, bid, ask, timestamp 
+        FROM "${tableName}" 
+        WHERE symbol = :symbol 
+        ORDER BY timestamp DESC 
+        LIMIT 1
+      `, {
+        replacements: { symbol },
+        type: sequelize.QueryTypes.SELECT
+      });
+
+      if (result && result.length > 0) {
+        const quote = result[0];
+        return {
+          bid: parseFloat(quote.bid),
+          ask: parseFloat(quote.ask),
+          symbol: quote.symbol,
+          timestamp: quote.timestamp,
+          source: 'database'
+        };
+      }
+
+      return null;
+    } catch (error) {
+      logger.error(`❌ Database quote lookup failed for ${brokerName}/${symbol}:`, error.message);
+      return null;
+    }
+  }
+
+  // ✅ NEW: Check if quote is fresh (within specified age)
+  isQuoteFresh(quote, maxAgeMs = 5000) {
+    if (!quote || !quote.timestamp) {
+      return false;
+    }
+    const ageMs = this.getQuoteAgeMs(quote);
+    return ageMs <= maxAgeMs;
+  }
+
+  // ✅ NEW: Get age of quote in milliseconds
+  getQuoteAgeMs(quote) {
+    if (!quote || !quote.timestamp) {
+      return Infinity;
+    }
+    return Date.now() - new Date(quote.timestamp).getTime();
   }
 
   async checkIsTradeSession(token, symbol, terminal) {

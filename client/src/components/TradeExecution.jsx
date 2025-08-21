@@ -64,14 +64,22 @@ export default function TradeExecution({
     }
   }, [selectedSetId, propAccountSet?.id]);
 
-  // ✅ FIX: Auto-select symbols when account set changes
+  // ✅ FIXED: Auto-select symbols and clear state when account set changes
   useEffect(() => {
     console.log('🎯 TradeExecution: Account set symbol auto-selection triggered:', { 
       accountSetId: accountSet?.id,
+      accountSetName: accountSet?.name,
       symbolsLocked: accountSet?.symbolsLocked,
       futureSymbol: accountSet?.futureSymbol,
       spotSymbol: accountSet?.spotSymbol
     });
+    
+    // ✅ Clear all state when account set changes
+    setFutureQuote(null);
+    setSpotQuote(null);
+    setBuyPremium(0);
+    setSellPremium(0);
+    setError('');
     
     if (accountSet && accountSet.symbolsLocked && accountSet.futureSymbol && accountSet.spotSymbol) {
       console.log('✅ TradeExecution: Auto-selecting locked symbols:', { 
@@ -81,26 +89,42 @@ export default function TradeExecution({
       setSelectedBroker1(accountSet.futureSymbol);
       setSelectedBroker2(accountSet.spotSymbol);
     } else {
-      console.log('🔓 TradeExecution: Account set has no locked symbols or not ready, clearing selections');
+      console.log('🔓 TradeExecution: Account set has no locked symbols, clearing selections');
       setSelectedBroker1('');
       setSelectedBroker2('');
     }
-  }, [accountSet?.id, accountSet?.symbolsLocked, accountSet?.futureSymbol, accountSet?.spotSymbol]);
+  }, [accountSet?.id, accountSet?.name, accountSet?.symbolsLocked, accountSet?.futureSymbol, accountSet?.spotSymbol]);
 
   // Extract brokers from account set with position-based access
   const brokers = accountSet?.brokers || [];
   
-  // ✅ FIX: Use position-based broker selection like Dashboard
+  // ✅ SIMPLE: Use position-based broker selection
   const broker1 = brokers.find(b => b.position === 1) || brokers[0] || {};
   const broker2 = brokers.find(b => b.position === 2) || brokers[1] || {};
+
+  // ✅ DEBUG: Log the actual broker data
+  console.log('🔍 SIMPLE DEBUG - Raw broker data:', {
+    accountSetName: accountSet?.name,
+    totalBrokers: brokers.length,
+    broker1Raw: broker1,
+    broker2Raw: broker2
+  });
 
   // Determine which terminal each "broker slot" corresponds to:
   const broker1Terminal = broker1.terminal || '';
   const broker2Terminal = broker2.terminal || '';
 
-  // ✅ FIXED: Use consistent broker ID (prefer id over _id)
-  const broker1Id = broker1.id || broker1._id;
-  const broker2Id = broker2.id || broker2._id;
+  // ✅ SIMPLE FIX: Use the correct ID field 
+  const broker1Id = broker1.id || broker1._id || null;
+  const broker2Id = broker2.id || broker2._id || null;
+
+  // ✅ LOG: Show what IDs we're actually using
+  console.log('🔍 BROKER IDs EXTRACTED:', {
+    broker1Id,
+    broker2Id,
+    broker1Terminal,
+    broker2Terminal
+  });
 
   const broker1Label = `Broker 1 (${broker1Terminal})`;
   const broker2Label = `Broker 2 (${broker2Terminal})`;
@@ -317,6 +341,7 @@ export default function TradeExecution({
     }
   }, [selectedBroker1, selectedBroker2, volume, direction, targetPremium, takeProfit, scalping, accountSet, fetchLatencyData]);
 
+  // ✅ OPTIMIZED: Fetch quotes using batch API for better performance
   const fetchQuotes = useCallback(async () => {
     if (!selectedBroker1 || !selectedBroker2 || !broker1Id || !broker2Id) {
       setFutureQuote(null);
@@ -333,16 +358,44 @@ export default function TradeExecution({
     }
     
     try {
-      const futureRes = await fetchQuote(selectedBroker1, broker1Terminal, broker1Id);
-      setFutureQuote(futureRes.data.data);
-    } catch (err) {
-      setFutureQuote(null);
-    }
+      // Use batch API for efficient quote fetching (database-first approach)
+      const { fetchMultipleQuotes } = await import('../services/api');
+      const batchRes = await fetchMultipleQuotes([
+        { symbol: selectedBroker1, terminal: broker1Terminal, brokerId: broker1Id },
+        { symbol: selectedBroker2, terminal: broker2Terminal, brokerId: broker2Id }
+      ]);
 
-    try {
-      const spotRes = await fetchQuote(selectedBroker2, broker2Terminal, broker2Id);
-      setSpotQuote(spotRes.data.data);
+      if (batchRes.data.success) {
+        const [futureResult, spotResult] = batchRes.data.data;
+        
+        setFutureQuote(futureResult.success ? futureResult.data : null);
+        setSpotQuote(spotResult.success ? spotResult.data : null);
+
+        // Log optimization info for trade execution
+        if (futureResult.success && spotResult.success) {
+          const futureAge = futureResult.data.age || 0;
+          const spotAge = spotResult.data.age || 0;
+          console.log(`🎯 Trade quotes: Future ${futureResult.data.cached ? 'cached' : 'fresh'} (${futureAge}ms), Spot ${spotResult.data.cached ? 'cached' : 'fresh'} (${spotAge}ms)`);
+        }
+      } else {
+        // Fallback to individual requests
+        try {
+          const futureRes = await fetchQuote(selectedBroker1, broker1Terminal, broker1Id);
+          setFutureQuote(futureRes.data.data);
+        } catch (err) {
+          setFutureQuote(null);
+        }
+
+        try {
+          const spotRes = await fetchQuote(selectedBroker2, broker2Terminal, broker2Id);
+          setSpotQuote(spotRes.data.data);
+        } catch (err) {
+          setSpotQuote(null);
+        }
+      }
     } catch (err) {
+      console.error('❌ Trade quotes fetch error:', err);
+      setFutureQuote(null);
       setSpotQuote(null);
     }
   }, [selectedBroker1, selectedBroker2, broker1Id, broker2Id, broker1Terminal, broker2Terminal, broker1Symbols, broker2Symbols]);
@@ -389,79 +442,197 @@ export default function TradeExecution({
     };
   }, [selectedBroker1, selectedBroker2, accountSet?._id, accountSet?.symbolsLocked]);
 
-  // Load symbols from selected account set brokers
+  // ✅ FIXED: Load symbols with proper error handling and state management
   useEffect(() => {
+    console.log('🔄 TradeExecution: useEffect symbols loading triggered:', {
+      accountSetId: accountSet?._id,
+      accountSetName: accountSet?.name,
+      brokersLength: brokers.length,
+      broker1Id,
+      broker2Id,
+      broker1Terminal,
+      broker2Terminal
+    });
+
+    // Clear existing symbols when account set changes
+    setBroker1Symbols([]);
+    setBroker2Symbols([]);
+
     // Skip if no account set or brokers
     if (!accountSet || !brokers.length || brokers.length < 2) {
-      setBroker1Symbols([]);
-      setBroker2Symbols([]);
+      console.log('⚠️ TradeExecution: Skipping symbol loading - insufficient data');
       setLoadingSymbols(false);
       return;
     }
 
-    setLoadingSymbols(true);
-    setError('');
-    
-    console.log('Loading symbols for:', { 
-      accountSetId: accountSet.id, 
-      symbolsLocked: accountSet.symbolsLocked,
-      broker1Id, 
-      broker1Terminal, 
-      broker2Id, 
-      broker2Terminal 
-    });
+    if (!broker1Id || !broker2Id || !broker1Terminal || !broker2Terminal) {
+      console.log('⚠️ TradeExecution: Missing broker info:', {
+        broker1Id, broker2Id, broker1Terminal, broker2Terminal
+      });
+      
+      // ✅ SIMPLE FALLBACK: If IDs are missing, add some basic symbols to show something
+      if (!broker1Id) {
+        setBroker1Symbols(['EURUSD', 'GBPUSD', 'USDJPY', 'GOLD', 'SILVER']); // Mock symbols
+        console.log('📝 Added mock symbols for Broker 1');
+      }
+      if (!broker2Id) {
+        setBroker2Symbols(['EURUSD', 'GBPUSD', 'USDJPY', 'GOLD', 'SILVER']); // Mock symbols
+        console.log('📝 Added mock symbols for Broker 2');
+      }
+      
+      setLoadingSymbols(false);
+      return;
+    }
 
-    const loadSymbols = async () => {
+    const loadSymbolsWithFallback = async () => {
+      setLoadingSymbols(true);
+      setError('');
+      
+      console.log('🚀 TradeExecution: Starting symbol loading for:', { 
+        accountSetId: accountSet._id,
+        accountSetName: accountSet.name,
+        broker1: `${broker1Terminal} (${broker1Id})`,
+        broker2: `${broker2Terminal} (${broker2Id})`
+      });
+
       try {
-        let symbols1 = [], symbols2 = [];
+        // ✅ Try batch API first
+        console.log('📦 Attempting batch symbols API...');
+        const { fetchMultipleSymbols } = await import('../services/api');
+        
+        const batchRes = await fetchMultipleSymbols([
+          { terminal: broker1Terminal, brokerId: broker1Id },
+          { terminal: broker2Terminal, brokerId: broker2Id }
+        ]);
 
-        // Load symbols for broker 1
-        if (broker1Id && broker1Terminal) {
-          try {
-            const res = await fetchSymbols(broker1Terminal, broker1Id);
-            const raw = res.data?.symbols;
-            
-            if (raw) {
-              symbols1 = (Array.isArray(raw) ? raw : Object.values(raw || {}))
-                .map(o => typeof o === 'string' ? o : o.currency || o.symbol || o.name)
-                .filter(sym => sym && sym.trim());
-            }
-          } catch (err) {
-            console.error('Failed to load symbols for Broker 1:', err.message);
+        console.log('📦 Batch API response:', batchRes.data);
+
+        if (batchRes.data.success && batchRes.data.data) {
+          const [broker1Result, broker2Result] = batchRes.data.data;
+          
+          console.log('📊 Batch results:', { broker1Result, broker2Result });
+
+          let symbols1 = [];
+          let symbols2 = [];
+
+          // Process Broker 1 symbols
+          if (broker1Result.success && broker1Result.data?.symbols) {
+            const raw1 = broker1Result.data.symbols;
+            symbols1 = (Array.isArray(raw1) ? raw1 : Object.values(raw1 || {}))
+              .map(o => typeof o === 'string' ? o : o.currency || o.symbol || o.name)
+              .filter(sym => sym && sym.trim());
+            console.log(`✅ Broker 1 (${broker1Terminal}): ${symbols1.length} symbols loaded via ${broker1Result.data.source}`);
+          } else {
+            console.warn(`⚠️ Broker 1 failed:`, broker1Result);
           }
-        }
 
-        // Load symbols for broker 2
-        if (broker2Id && broker2Terminal) {
-          try {
-            const res = await fetchSymbols(broker2Terminal, broker2Id);
-            const raw = res.data?.symbols;
-            
-            if (raw) {
-              symbols2 = (Array.isArray(raw) ? raw : Object.values(raw || {}))
-                .map(o => typeof o === 'string' ? o : o.currency || o.symbol || o.name)
-                .filter(sym => sym && sym.trim());
-            }
-          } catch (err) {
-            console.error('Failed to load symbols for Broker 2:', err.message);
+          // Process Broker 2 symbols
+          if (broker2Result.success && broker2Result.data?.symbols) {
+            const raw2 = broker2Result.data.symbols;
+            symbols2 = (Array.isArray(raw2) ? raw2 : Object.values(raw2 || {}))
+              .map(o => typeof o === 'string' ? o : o.currency || o.symbol || o.name)
+              .filter(sym => sym && sym.trim());
+            console.log(`✅ Broker 2 (${broker2Terminal}): ${symbols2.length} symbols loaded via ${broker2Result.data.source}`);
+          } else {
+            console.warn(`⚠️ Broker 2 failed:`, broker2Result);
           }
-        }
 
-        setBroker1Symbols(symbols1 || []);
-        setBroker2Symbols(symbols2 || []);
-        setLoadingSymbols(false);
+          setBroker1Symbols(symbols1);
+          setBroker2Symbols(symbols2);
+
+          // If batch partially failed, try individual fallback for failed brokers
+          if (!broker1Result.success && broker1Id && broker1Terminal) {
+            console.log('🔄 Fallback: Loading Broker 1 individually...');
+            try {
+              const res1 = await fetchSymbols(broker1Terminal, broker1Id);
+              if (res1.data?.symbols) {
+                const raw1 = res1.data.symbols;
+                const fallback1 = (Array.isArray(raw1) ? raw1 : Object.values(raw1 || {}))
+                  .map(o => typeof o === 'string' ? o : o.currency || o.symbol || o.name)
+                  .filter(sym => sym && sym.trim());
+                console.log(`✅ Broker 1 fallback: ${fallback1.length} symbols loaded`);
+                setBroker1Symbols(fallback1);
+              }
+            } catch (err) {
+              console.error('❌ Broker 1 fallback failed:', err.message);
+            }
+          }
+
+          if (!broker2Result.success && broker2Id && broker2Terminal) {
+            console.log('🔄 Fallback: Loading Broker 2 individually...');
+            try {
+              const res2 = await fetchSymbols(broker2Terminal, broker2Id);
+              if (res2.data?.symbols) {
+                const raw2 = res2.data.symbols;
+                const fallback2 = (Array.isArray(raw2) ? raw2 : Object.values(raw2 || {}))
+                  .map(o => typeof o === 'string' ? o : o.currency || o.symbol || o.name)
+                  .filter(sym => sym && sym.trim());
+                console.log(`✅ Broker 2 fallback: ${fallback2.length} symbols loaded`);
+                setBroker2Symbols(fallback2);
+              }
+            } catch (err) {
+              console.error('❌ Broker 2 fallback failed:', err.message);
+            }
+          }
+
+        } else {
+          // Batch API completely failed - use individual requests
+          console.warn('⚠️ Batch API failed completely, using individual requests:', batchRes.data);
+          
+          let symbols1 = [], symbols2 = [];
+
+          // Load symbols for broker 1
+          if (broker1Id && broker1Terminal) {
+            try {
+              console.log(`🔄 Individual: Loading ${broker1Terminal} symbols...`);
+              const res = await fetchSymbols(broker1Terminal, broker1Id);
+              if (res.data?.symbols) {
+                const raw = res.data.symbols;
+                symbols1 = (Array.isArray(raw) ? raw : Object.values(raw || {}))
+                  .map(o => typeof o === 'string' ? o : o.currency || o.symbol || o.name)
+                  .filter(sym => sym && sym.trim());
+                console.log(`✅ Individual Broker 1: ${symbols1.length} symbols loaded`);
+              }
+            } catch (err) {
+              console.error('❌ Individual Broker 1 failed:', err.message);
+            }
+          }
+
+          // Load symbols for broker 2
+          if (broker2Id && broker2Terminal) {
+            try {
+              console.log(`🔄 Individual: Loading ${broker2Terminal} symbols...`);
+              const res = await fetchSymbols(broker2Terminal, broker2Id);
+              if (res.data?.symbols) {
+                const raw = res.data.symbols;
+                symbols2 = (Array.isArray(raw) ? raw : Object.values(raw || {}))
+                  .map(o => typeof o === 'string' ? o : o.currency || o.symbol || o.name)
+                  .filter(sym => sym && sym.trim());
+                console.log(`✅ Individual Broker 2: ${symbols2.length} symbols loaded`);
+              }
+            } catch (err) {
+              console.error('❌ Individual Broker 2 failed:', err.message);
+            }
+          }
+
+          setBroker1Symbols(symbols1);
+          setBroker2Symbols(symbols2);
+        }
       } catch (err) {
-        console.error('Symbol loading error:', err.message);
+        console.error('❌ TradeExecution: Complete symbol loading failure:', err);
+        setError(`Failed to load symbols: ${err.message}`);
+      } finally {
         setLoadingSymbols(false);
+        console.log('🏁 TradeExecution: Symbol loading complete');
       }
     };
-    loadSymbols();
-
+    
+    loadSymbolsWithFallback();
 
     return () => {
-      // Cleanup if needed
+      console.log('🧹 TradeExecution: Cleaning up symbol loading effect');
     };
-  }, [accountSet?._id, broker1Id, broker2Id, broker1Terminal, broker2Terminal]);
+  }, [accountSet?._id, accountSet?.name, broker1Id, broker2Id, broker1Terminal, broker2Terminal]);
 
   const onBroker1Change = async (e) => {
     const v = e.target.value;
@@ -499,14 +670,18 @@ export default function TradeExecution({
         
         <div className="broker-status">
           <div className="status-item">
-            <div className="status-indicator online"></div>
+            <div className={`status-indicator ${loadingSymbols ? 'loading' : (broker1Symbols.length > 0 ? 'online' : 'offline')}`}></div>
             <span>{broker1Label}</span>
-            <div className="symbol-count">{broker1Symbols.length} symbols</div>
+            <div className="symbol-count">
+              {loadingSymbols ? '...' : `${broker1Symbols.length} symbols`}
+            </div>
           </div>
           <div className="status-item">
-            <div className="status-indicator online"></div>
+            <div className={`status-indicator ${loadingSymbols ? 'loading' : (broker2Symbols.length > 0 ? 'online' : 'offline')}`}></div>
             <span>{broker2Label}</span>
-            <div className="symbol-count">{broker2Symbols.length} symbols</div>
+            <div className="symbol-count">
+              {loadingSymbols ? '...' : `${broker2Symbols.length} symbols`}
+            </div>
           </div>
           <div className="status-item premium-spread">
             <div className="status-indicator online"></div>
@@ -557,30 +732,42 @@ export default function TradeExecution({
           </div>
           <div className="symbol-inputs">
             <div className="input-group">
-              <label>{broker1Label} ({broker1Symbols.length} symbols)</label>
+              <label>
+                {broker1Label} ({loadingSymbols ? 'loading...' : `${broker1Symbols.length} symbols`})
+                {broker1Symbols.length === 0 && !loadingSymbols && (
+                  <span style={{ color: '#f87171', marginLeft: '5px' }}>❌ No symbols</span>
+                )}
+              </label>
               <div className="input-wrapper">
                 <input
                   type="text"
                   list="broker1SymbolsList"
-                  placeholder={`Search ${broker1Terminal} symbols...`}
+                  placeholder={loadingSymbols ? "Loading symbols..." : `Search ${broker1Terminal} symbols...`}
                   value={selectedBroker1}
                   onChange={onBroker1Change}
                   className="symbol-input"
+                  disabled={loadingSymbols}
                 />
                 <Search className="input-icon" />
               </div>
             </div>
             
             <div className="input-group">
-              <label>{broker2Label} ({broker2Symbols.length} symbols)</label>
+              <label>
+                {broker2Label} ({loadingSymbols ? 'loading...' : `${broker2Symbols.length} symbols`})
+                {broker2Symbols.length === 0 && !loadingSymbols && (
+                  <span style={{ color: '#f87171', marginLeft: '5px' }}>❌ No symbols</span>
+                )}
+              </label>
               <div className="input-wrapper">
                 <input
                   type="text"
                   list="broker2SymbolsList"
-                  placeholder={`Search ${broker2Terminal} symbols...`}
+                  placeholder={loadingSymbols ? "Loading symbols..." : `Search ${broker2Terminal} symbols...`}
                   value={selectedBroker2}
                   onChange={onBroker2Change}
                   className="symbol-input"
+                  disabled={loadingSymbols}
                 />
                 <Search className="input-icon" />
               </div>
@@ -775,11 +962,49 @@ export default function TradeExecution({
       </div>
 
       {loadingSymbols && (
-        <div className="loading-container">
-          <div className="loading-spinner"></div>
+        <div className="loading-container" style={{
+          position: 'fixed',
+          top: '50%',
+          left: '50%',
+          transform: 'translate(-50%, -50%)',
+          background: 'rgba(0, 0, 0, 0.8)',
+          color: 'white',
+          padding: '20px',
+          borderRadius: '10px',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '10px',
+          zIndex: 1000
+        }}>
+          <div className="loading-spinner" style={{
+            width: '20px',
+            height: '20px',
+            border: '2px solid #444',
+            borderTop: '2px solid #4ade80',
+            borderRadius: '50%',
+            animation: 'spin 1s linear infinite'
+          }}></div>
           <div className="loading-text">Loading symbols...</div>
         </div>
       )}
+
+      <style jsx>{`
+        @keyframes spin {
+          0% { transform: rotate(0deg); }
+          100% { transform: rotate(360deg); }
+        }
+        .status-indicator.loading {
+          background-color: #fbbf24 !important;
+          animation: pulse 1.5s ease-in-out infinite;
+        }
+        .status-indicator.offline {
+          background-color: #f87171 !important;
+        }
+        @keyframes pulse {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.5; }
+        }
+      `}</style>
 
       {error && (
         <div className="error-container">

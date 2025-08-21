@@ -135,7 +135,7 @@ router.get('/symbols', async (req, res) => {
   }
 });
 
-// ─── GET /api/trading/quote?terminal=MT4|MT5&id=<brokerId>&symbol=XYZ ─────────
+// ✅ OPTIMIZED: GET /api/trading/quote - Database-first with API fallback
 router.get('/quote', async (req, res) => {
   const startTime = Date.now();
   let brokerId;
@@ -146,16 +146,37 @@ router.get('/quote', async (req, res) => {
     const { symbol } = req.query;
     const isMT5 = terminal === 'MT5';
     const isAdmin = req.user.role === 'admin';
+    const databaseQuoteService = require('../services/databaseQuoteService');
+    
     const broker = await findBroker(brokerId, req.user.id, isAdmin);
     
     if (!broker) {
       return res.status(404).json({ success: false, message: 'Broker not found' });
     }
+
+    // ✅ DATABASE-FIRST: Try cache first
+    let quote = await databaseQuoteService.getQuoteFromDatabase(broker.brokerName, symbol);
     
-    const token = await getValidToken(broker, isMT5);
-    const client = isMT5 ? axiosMT5 : axiosMT4;
+    // Only call API if cache is stale (> 5 seconds) or missing
+    if (!databaseQuoteService.isQuoteFresh(quote, 5000)) {
+      const token = await getValidToken(broker, isMT5);
+      const client = isMT5 ? axiosMT5 : axiosMT4;
+      
+      const resp = await client.get('/GetQuote', { params: { id: token, symbol } });
+      
+      if (resp.data?.bid && resp.data?.ask) {
+        quote = {
+          bid: parseFloat(resp.data.bid),
+          ask: parseFloat(resp.data.ask),
+          symbol,
+          timestamp: new Date(),
+          source: 'api'
+        };
+      }
+    } else {
+      quote.source = 'database';
+    }
     
-    const resp = await client.get('/GetQuote', { params: { id: token, symbol } });
     const endTime = Date.now();
     const latency = endTime - startTime;
     
@@ -164,7 +185,11 @@ router.get('/quote', async (req, res) => {
     
     return res.json({ 
       success: true, 
-      data: { ...resp.data, latency }
+      data: { 
+        ...quote, 
+        latency,
+        age: quote ? databaseQuoteService.getQuoteAgeMs(quote) : null
+      }
     });
   } catch (err) {
     const endTime = Date.now();
@@ -179,12 +204,13 @@ router.get('/quote', async (req, res) => {
   }
 });
 
-// GET /api/trading/quote/:symbol - Uses database cache with live API fallback
+// ✅ OPTIMIZED: GET /api/trading/quote/:symbol - Database-first approach
 router.get('/quote/:symbol', async (req, res) => {
   const { symbol } = req.params;
   const { terminal } = req.query;
   const brokerId = extractBrokerId(req);
   const isAdmin = req.user.role === 'admin';
+  const databaseQuoteService = require('../services/databaseQuoteService');
 
   if (!symbol) {
     return res.status(400).json({
@@ -217,75 +243,53 @@ router.get('/quote/:symbol', async (req, res) => {
       });
     }
 
-    let data = null;
+    // ✅ DATABASE-FIRST: Try cache first
+    let data = await databaseQuoteService.getQuoteFromDatabase(broker.brokerName, symbol);
 
-    // Try cache first
-    try {
-      const normalizedBroker = await intelligentNormalizer.normalizeBrokerName(
-        broker.brokerName, 
-        broker.server, 
-        broker.companyName
-      );
-      
-      const tableName = `bid_ask_${normalizedBroker}`;
-      
-      const [results] = await sequelize.query(`
-        SELECT symbol, bid, ask, timestamp 
-        FROM "${tableName}" 
-        WHERE symbol = :symbol 
-        ORDER BY timestamp DESC 
-        LIMIT 1
-      `, {
-        replacements: { symbol }
-      });
-
-      if (results.length > 0) {
-        const quote = results[0];
-        data = {
-          bid: parseFloat(quote.bid),
-          ask: parseFloat(quote.ask),
-          symbol: quote.symbol,
-          timestamp: quote.timestamp,
-          cached: true
-        };
-      }
-    } catch (cacheError) {
-      // Cache lookup failed, continue to live API
-    }
-
-    // Fallback to live API if no cache data
-    if (!data) {
+    // Only fallback to API if cache is stale (> 5 seconds) or missing
+    if (!databaseQuoteService.isQuoteFresh(data, 5000)) {
       try {
         const mtToken = await getValidToken(broker, broker.terminal === 'MT5');
         
-        // Gateway-proxy: reuse the shared client
         const client = broker.terminal === 'MT5' ? axiosMT5 : axiosMT4;
         const response = await client.get('/GetQuote', {
           params: { id: mtToken, symbol }
         });
 
-        if (response.data && response.data.bid && response.data.ask) {
+        if (response.data?.bid && response.data?.ask) {
           data = {
             bid: parseFloat(response.data.bid),
             ask: parseFloat(response.data.ask),
             symbol,
             timestamp: new Date(),
-            cached: false
+            source: 'api',
+            age: 0
           };
         }
       } catch (liveError) {
-        // Live fetch failed
+        // Live fetch failed, use stale cache if available
+        if (data) {
+          data.source = 'stale_cache';
+        }
       }
+    } else {
+      data.source = 'database';
     }
 
     if (!data) {
       return res.status(404).json({
         success: false,
-        message: 'Quote not found in cache and live fetch failed'
+        message: 'Quote not found in database and live fetch failed'
       });
     }
     
-    return res.json({ success: true, data });
+    return res.json({ 
+      success: true, 
+      data: {
+        ...data,
+        cached: data.source !== 'api'
+      }
+    });
   } catch (error) {
     res.status(500).json({ 
       success: false, 
@@ -592,6 +596,7 @@ router.get('/mt4-symbols-legacy', async (req, res) => {
   }
 });
 
+// ✅ OPTIMIZED: MT5 quote with database-first approach
 router.get('/mt5-quote/:symbol', async (req, res) => {
   const startTime = Date.now();
   let brokerId;
@@ -601,13 +606,42 @@ router.get('/mt5-quote/:symbol', async (req, res) => {
     const user = await User.findByPk(req.user.id);
     const tradingAccounts = user.tradingAccounts || [];
     const mt5Account = tradingAccounts.find(acc => acc.terminal === 'MT5');
+    const databaseQuoteService = require('../services/databaseQuoteService');
     brokerId = mt5Account?.id;
     
     if (!mt5Account?.token) {
       return res.status(400).json({ error: 'MT5 account not linked' });
     }
 
-    const response = await axiosMT5.get('/GetQuote', {params: { id: mt5Account.token, symbol }});
+    // ✅ DATABASE-FIRST: Try cache first (assuming we can derive broker name)
+    let quote = null;
+    try {
+      // For legacy MT5 accounts, try to get quote from database if possible
+      // This might need adjustment based on how brokerName is stored in tradingAccounts
+      if (mt5Account.brokerName) {
+        quote = await databaseQuoteService.getQuoteFromDatabase(mt5Account.brokerName, symbol);
+      }
+    } catch (cacheError) {
+      // Continue to API
+    }
+
+    // Only call API if cache is stale or missing
+    if (!databaseQuoteService.isQuoteFresh(quote, 5000)) {
+      const response = await axiosMT5.get('/GetQuote', {params: { id: mt5Account.token, symbol }});
+      
+      if (response.data?.Bid && response.data?.Ask) {
+        quote = {
+          Bid: response.data.Bid,
+          Ask: response.data.Ask,
+          symbol,
+          timestamp: new Date(),
+          source: 'api'
+        };
+      }
+    } else {
+      quote.source = 'database';
+    }
+
     const endTime = Date.now();
     const latency = endTime - startTime;
     
@@ -616,7 +650,11 @@ router.get('/mt5-quote/:symbol', async (req, res) => {
       latencyMonitor.addLatencyRecord(brokerId, 'quotePing', latency);
     }
     
-    res.json({ ...response.data, latency });
+    res.json({ 
+      ...quote, 
+      latency,
+      age: quote ? databaseQuoteService.getQuoteAgeMs(quote) : null
+    });
   } catch (error) {
     const endTime = Date.now();
     const latency = endTime - startTime;
@@ -630,6 +668,7 @@ router.get('/mt5-quote/:symbol', async (req, res) => {
   }
 });
 
+// ✅ OPTIMIZED: MT4 quote with database-first approach
 router.get('/mt4-quote/:symbol', async (req, res) => {
   const startTime = Date.now();
   let brokerId;
@@ -639,13 +678,41 @@ router.get('/mt4-quote/:symbol', async (req, res) => {
     const user = await User.findByPk(req.user.id);
     const tradingAccounts = user.tradingAccounts || [];
     const mt4Account = tradingAccounts.find(acc => acc.terminal === 'MT4');
+    const databaseQuoteService = require('../services/databaseQuoteService');
     brokerId = mt4Account?.id;
     
     if (!mt4Account?.token) {
       return res.status(400).json({ error: 'MT4 account not linked' });
     }
 
-    const response = await axiosMT4.get('/GetQuote', {params: { id: mt4Account.token, symbol }});
+    // ✅ DATABASE-FIRST: Try cache first
+    let quote = null;
+    try {
+      // For legacy MT4 accounts, try to get quote from database if possible
+      if (mt4Account.brokerName) {
+        quote = await databaseQuoteService.getQuoteFromDatabase(mt4Account.brokerName, symbol);
+      }
+    } catch (cacheError) {
+      // Continue to API
+    }
+
+    // Only call API if cache is stale or missing
+    if (!databaseQuoteService.isQuoteFresh(quote, 5000)) {
+      const response = await axiosMT4.get('/GetQuote', {params: { id: mt4Account.token, symbol }});
+      
+      if (response.data?.Bid && response.data?.Ask) {
+        quote = {
+          Bid: response.data.Bid,
+          Ask: response.data.Ask,
+          symbol,
+          timestamp: new Date(),
+          source: 'api'
+        };
+      }
+    } else {
+      quote.source = 'database';
+    }
+
     const endTime = Date.now();
     const latency = endTime - startTime;
     
@@ -654,7 +721,11 @@ router.get('/mt4-quote/:symbol', async (req, res) => {
       latencyMonitor.addLatencyRecord(brokerId, 'quotePing', latency);
     }
     
-    res.json({ ...response.data, latency });
+    res.json({ 
+      ...quote, 
+      latency,
+      age: quote ? databaseQuoteService.getQuoteAgeMs(quote) : null
+    });
   } catch (error) {
     const endTime = Date.now();
     const latency = endTime - startTime;
@@ -1694,5 +1765,256 @@ router.put('/update-tp', async (req, res) => {
   }
 });
 
+
+// ✅ NEW: Batch quotes endpoint for efficient frontend requests
+router.post('/quotes/batch', async (req, res) => {
+  try {
+    const { requests } = req.body;
+    const isAdmin = req.user.role === 'admin';
+    const databaseQuoteService = require('../services/databaseQuoteService');
+
+    if (!Array.isArray(requests) || requests.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'requests array is required'
+      });
+    }
+
+    if (requests.length > 20) {
+      return res.status(400).json({
+        success: false,
+        message: 'Maximum 20 quote requests per batch'
+      });
+    }
+
+    const results = await Promise.all(requests.map(async (request) => {
+      try {
+        const { symbol, terminal, brokerId } = request;
+        
+        if (!symbol || !terminal || !brokerId) {
+          return {
+            symbol,
+            terminal,
+            brokerId,
+            success: false,
+            error: 'Missing required fields'
+          };
+        }
+
+        const broker = await findBroker(brokerId, req.user.id, isAdmin);
+        if (!broker) {
+          return {
+            symbol,
+            terminal,
+            brokerId,
+            success: false,
+            error: 'Broker not found'
+          };
+        }
+
+        // ✅ DATABASE-FIRST: Try cache first
+        let quote = await databaseQuoteService.getQuoteFromDatabase(broker.brokerName, symbol);
+
+        // Only call API if cache is stale
+        if (!databaseQuoteService.isQuoteFresh(quote, 5000)) {
+          try {
+            const token = await getValidToken(broker, terminal === 'MT5');
+            const client = terminal === 'MT5' ? axiosMT5 : axiosMT4;
+            
+            const response = await client.get('/GetQuote', {
+              params: { id: token, symbol },
+              timeout: 5000
+            });
+
+            if (response.data?.bid && response.data?.ask) {
+              quote = {
+                bid: parseFloat(response.data.bid),
+                ask: parseFloat(response.data.ask),
+                symbol,
+                timestamp: new Date(),
+                source: 'api',
+                age: 0
+              };
+            }
+          } catch (apiError) {
+            // Use stale cache if API fails
+          }
+        }
+
+        if (!quote) {
+          return {
+            symbol,
+            terminal,
+            brokerId,
+            success: false,
+            error: 'Quote not available'
+          };
+        }
+
+        return {
+          symbol,
+          terminal,
+          brokerId,
+          success: true,
+          data: {
+            ...quote,
+            cached: quote.source !== 'api',
+            age: databaseQuoteService.getQuoteAgeMs(quote)
+          }
+        };
+
+      } catch (error) {
+        return {
+          symbol: request.symbol,
+          terminal: request.terminal,
+          brokerId: request.brokerId,
+          success: false,
+          error: error.message
+        };
+      }
+    }));
+
+    const successCount = results.filter(r => r.success).length;
+    
+    res.json({
+      success: true,
+      data: results,
+      meta: {
+        total: requests.length,
+        successful: successCount,
+        failed: requests.length - successCount
+      }
+    });
+
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message || 'Failed to fetch batch quotes'
+    });
+  }
+});
+
+// ✅ NEW: Batch symbols endpoint for efficient frontend requests
+router.post('/symbols/batch', async (req, res) => {
+  try {
+    const { requests } = req.body;
+    const isAdmin = req.user.role === 'admin';
+
+    if (!Array.isArray(requests) || requests.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'requests array is required'
+      });
+    }
+
+    if (requests.length > 10) {
+      return res.status(400).json({
+        success: false,
+        message: 'Maximum 10 symbol requests per batch'
+      });
+    }
+
+    const results = await Promise.all(requests.map(async (request) => {
+      try {
+        const { terminal, brokerId } = request;
+        
+        if (!terminal || !brokerId) {
+          return {
+            brokerId,
+            terminal,
+            success: false,
+            error: 'Missing required fields'
+          };
+        }
+
+        if (!['MT4', 'MT5'].includes(terminal)) {
+          return {
+            brokerId,
+            terminal,
+            success: false,
+            error: 'Invalid terminal (must be MT4 or MT5)'
+          };
+        }
+
+        const broker = await findBroker(brokerId, req.user.id, isAdmin);
+        if (!broker) {
+          return {
+            brokerId,
+            terminal,
+            success: false,
+            error: 'Broker not found'
+          };
+        }
+
+        // ✅ Use the cached symbols service with better error handling
+        let token;
+        try {
+          token = await getValidToken(broker, terminal === 'MT5');
+        } catch (tokenErr) {
+          console.error(`❌ Token error for ${brokerId} (${terminal}):`, tokenErr.message);
+          return {
+            brokerId,
+            terminal,
+            success: false,
+            error: `Token error: ${tokenErr.message}`
+          };
+        }
+
+        const symbols = await brokerSymbolsCache.getSymbolsForBroker(
+          broker.brokerName, broker.server, terminal, token
+        );
+
+        console.log(`📊 Batch symbols result for ${brokerId} (${terminal}): ${symbols ? Object.keys(symbols).length || 0 : 0} symbols`);
+
+        if (!symbols) {
+          return {
+            brokerId,
+            terminal,
+            success: false,
+            error: 'Could not fetch symbols from cache or API'
+          };
+        }
+
+        return {
+          brokerId,
+          terminal,
+          success: true,
+          data: {
+            symbols,
+            brokerName: broker.brokerName,
+            source: 'cached' // Always from cache system
+          }
+        };
+
+      } catch (error) {
+        return {
+          brokerId: request.brokerId,
+          terminal: request.terminal,
+          success: false,
+          error: error.message
+        };
+      }
+    }));
+
+    const successCount = results.filter(r => r.success).length;
+    
+    res.json({
+      success: true,
+      data: results,
+      meta: {
+        total: requests.length,
+        successful: successCount,
+        failed: requests.length - successCount,
+        source: 'batch_cached'
+      }
+    });
+
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message || 'Failed to fetch batch symbols'
+    });
+  }
+});
 
 module.exports = router;

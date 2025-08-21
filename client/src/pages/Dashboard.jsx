@@ -375,18 +375,39 @@ export default function Dashboard() {
     }
   }, [selectedSetId]);
 
+  // ✅ OPTIMIZED: Fetch locked quotes using batch API
   useEffect(() => {
     if (!currentSet.symbolsLocked) return;
-    fetchQuote(currentSet.futureSymbol, broker1Term, broker1Id)
-      .then(res => setLockedFutureQuote(res.data.data))
-      .catch(err => {
+    
+    const fetchLockedQuotes = async () => {
+      try {
+        const { fetchMultipleQuotes } = await import('../services/api');
+        const batchRes = await fetchMultipleQuotes([
+          { symbol: currentSet.futureSymbol, terminal: broker1Term, brokerId: broker1Id },
+          { symbol: currentSet.spotSymbol, terminal: broker2Term, brokerId: broker2Id }
+        ]);
+
+        if (batchRes.data.success) {
+          const [futureResult, spotResult] = batchRes.data.data;
+          setLockedFutureQuote(futureResult.success ? futureResult.data : null);
+          setLockedSpotQuote(spotResult.success ? spotResult.data : null);
+        } else {
+          // Fallback to individual requests
+          fetchQuote(currentSet.futureSymbol, broker1Term, broker1Id)
+            .then(res => setLockedFutureQuote(res.data.data))
+            .catch(() => setLockedFutureQuote(null));
+          fetchQuote(currentSet.spotSymbol, broker2Term, broker2Id)
+            .then(res => setLockedSpotQuote(res.data.data))
+            .catch(() => setLockedSpotQuote(null));
+        }
+      } catch (err) {
+        console.error('❌ Locked quotes fetch error:', err);
         setLockedFutureQuote(null);
-      });
-    fetchQuote(currentSet.spotSymbol, broker2Term, broker2Id)
-      .then(res => setLockedSpotQuote(res.data.data))
-      .catch(err => {
         setLockedSpotQuote(null);
-      });
+      }
+    };
+
+    fetchLockedQuotes();
   }, [
     currentSet.symbolsLocked,
     currentSet.futureSymbol,
@@ -472,7 +493,15 @@ export default function Dashboard() {
     };
 
     const handleQuoteUpdate = (data) => {
-      console.log('📈 Quote update received:', data);
+      console.log('📈 Optimized quote update received:', data);
+      
+      // ✅ Log cache optimization info
+      if (data.futureQuote?.source || data.spotQuote?.source) {
+        const futureAge = data.futureQuote?.age || 0;
+        const spotAge = data.spotQuote?.age || 0;
+        console.log(`📊 WebSocket quotes: Future ${data.futureQuote?.source || 'unknown'} (${futureAge}ms), Spot ${data.spotQuote?.source || 'unknown'} (${spotAge}ms)`);
+      }
+      
       console.log('🔒 Symbols locked:', currentSet.symbolsLocked);
       console.log('🎯 Expected symbols:', { 
         future: currentSet.symbolsLocked ? currentSet.futureSymbol : futureSymbol,
@@ -770,59 +799,183 @@ export default function Dashboard() {
     }
   };
 
+  // ✅ FIXED: Load symbols with proper error handling and state management
   useEffect(() => {
+    console.log('🔄 Dashboard: useEffect symbols loading triggered:', {
+      selectedSetId,
+      symbolsLocked: currentSet.symbolsLocked,
+      broker1Id,
+      broker2Id,
+      broker1Term,
+      broker2Term
+    });
+
+    // Clear symbols when account set changes or if symbols are locked
+    setBroker1Symbols([]);
+    setBroker2Symbols([]);
+
     if (!selectedSetId || currentSet.symbolsLocked) {
-      setBroker1Symbols([]);
-      setBroker2Symbols([]);
+      console.log('⚠️ Dashboard: Skipping symbol loading - no set or symbols locked');
+      setSymbolsLoading(false);
       return;
     }
 
-    if (!broker1Id || !broker2Id) {
+    if (!broker1Id || !broker2Id || !broker1Term || !broker2Term) {
+      console.log('⚠️ Dashboard: Skipping symbol loading - missing broker info:', {
+        broker1Id, broker2Id, broker1Term, broker2Term
+      });
+      setSymbolsLoading(false);
       return;
     }
 
-    setSymbolsLoading(true);
-    setErrorMsg('');
+    const loadSymbolsWithFallback = async () => {
+      setSymbolsLoading(true);
+      setErrorMsg('');
 
-    (async () => {
+      console.log('🚀 Dashboard: Starting symbol loading for:', {
+        selectedSetId,
+        broker1: `${broker1Term} (${broker1Id})`,
+        broker2: `${broker2Term} (${broker2Id})`
+      });
+
       try {
-        let symbols1 = [];
-        let symbols2 = [];
+        // ✅ Try batch symbols API first
+        console.log('📦 Dashboard: Attempting batch symbols API...');
+        const { fetchMultipleSymbols } = await import('../services/api');
+        
+        const batchRes = await fetchMultipleSymbols([
+          { terminal: broker1Term, brokerId: broker1Id },
+          { terminal: broker2Term, brokerId: broker2Id }
+        ]);
 
-        if (broker1Id && broker1Term) {
-          try {
-            const res1 = await fetchSymbols(broker1Term, broker1Id);
-            const raw1 = res1.data?.symbols;
+        console.log('📦 Dashboard: Batch API response:', batchRes.data);
+
+        if (batchRes.data.success && batchRes.data.data) {
+          const [broker1Result, broker2Result] = batchRes.data.data;
+          
+          console.log('📊 Dashboard: Batch results:', { broker1Result, broker2Result });
+
+          let symbols1 = [];
+          let symbols2 = [];
+
+          // Process Broker 1 symbols
+          if (broker1Result.success && broker1Result.data?.symbols) {
+            const raw1 = broker1Result.data.symbols;
             symbols1 = (Array.isArray(raw1) ? raw1 : Object.values(raw1 || {}))
               .map(o => typeof o === 'string' ? o : o.currency || o.symbol || o.name)
               .filter(sym => sym && sym.trim());
-          } catch (err) {
+            console.log(`✅ Dashboard Broker 1 (${broker1Term}): ${symbols1.length} symbols loaded via ${broker1Result.data.source}`);
+          } else {
+            console.warn(`⚠️ Dashboard Broker 1 failed:`, broker1Result);
           }
-        }
 
-        if (broker2Id && broker2Term) {
-          try {
-            const res2 = await fetchSymbols(broker2Term, broker2Id);
-            const raw2 = res2.data?.symbols;
+          // Process Broker 2 symbols
+          if (broker2Result.success && broker2Result.data?.symbols) {
+            const raw2 = broker2Result.data.symbols;
             symbols2 = (Array.isArray(raw2) ? raw2 : Object.values(raw2 || {}))
               .map(o => typeof o === 'string' ? o : o.currency || o.symbol || o.name)
               .filter(sym => sym && sym.trim());
-          } catch (err) {
+            console.log(`✅ Dashboard Broker 2 (${broker2Term}): ${symbols2.length} symbols loaded via ${broker2Result.data.source}`);
+          } else {
+            console.warn(`⚠️ Dashboard Broker 2 failed:`, broker2Result);
+          }
+
+          setBroker1Symbols(symbols1);
+          setBroker2Symbols(symbols2);
+
+          // Try individual fallback for failed brokers
+          if (!broker1Result.success && broker1Id && broker1Term) {
+            console.log('🔄 Dashboard: Fallback loading Broker 1 individually...');
+            try {
+              const res1 = await fetchSymbols(broker1Term, broker1Id);
+              if (res1.data?.symbols) {
+                const raw1 = res1.data.symbols;
+                const fallback1 = (Array.isArray(raw1) ? raw1 : Object.values(raw1 || {}))
+                  .map(o => typeof o === 'string' ? o : o.currency || o.symbol || o.name)
+                  .filter(sym => sym && sym.trim());
+                console.log(`✅ Dashboard Broker 1 fallback: ${fallback1.length} symbols loaded`);
+                setBroker1Symbols(fallback1);
+              }
+            } catch (err) {
+              console.error('❌ Dashboard Broker 1 fallback failed:', err.message);
+            }
+          }
+
+          if (!broker2Result.success && broker2Id && broker2Term) {
+            console.log('🔄 Dashboard: Fallback loading Broker 2 individually...');
+            try {
+              const res2 = await fetchSymbols(broker2Term, broker2Id);
+              if (res2.data?.symbols) {
+                const raw2 = res2.data.symbols;
+                const fallback2 = (Array.isArray(raw2) ? raw2 : Object.values(raw2 || {}))
+                  .map(o => typeof o === 'string' ? o : o.currency || o.symbol || o.name)
+                  .filter(sym => sym && sym.trim());
+                console.log(`✅ Dashboard Broker 2 fallback: ${fallback2.length} symbols loaded`);
+                setBroker2Symbols(fallback2);
+              }
+            } catch (err) {
+              console.error('❌ Dashboard Broker 2 fallback failed:', err.message);
+            }
+          }
+
+          if (!symbols1.length && !symbols2.length) {
+            setErrorMsg('No symbols loaded. Please check your account configuration.');
+          }
+        } else {
+          // Batch API completely failed
+          console.warn('⚠️ Dashboard: Batch API failed completely, using individual requests:', batchRes.data);
+          
+          let symbols1 = [], symbols2 = [];
+
+          if (broker1Id && broker1Term) {
+            try {
+              console.log(`🔄 Dashboard Individual: Loading ${broker1Term} symbols...`);
+              const res1 = await fetchSymbols(broker1Term, broker1Id);
+              if (res1.data?.symbols) {
+                const raw1 = res1.data.symbols;
+                symbols1 = (Array.isArray(raw1) ? raw1 : Object.values(raw1 || {}))
+                  .map(o => typeof o === 'string' ? o : o.currency || o.symbol || o.name)
+                  .filter(sym => sym && sym.trim());
+                console.log(`✅ Dashboard Individual Broker 1: ${symbols1.length} symbols loaded`);
+              }
+            } catch (err) {
+              console.error('❌ Dashboard Individual Broker 1 failed:', err.message);
+            }
+          }
+
+          if (broker2Id && broker2Term) {
+            try {
+              console.log(`🔄 Dashboard Individual: Loading ${broker2Term} symbols...`);
+              const res2 = await fetchSymbols(broker2Term, broker2Id);
+              if (res2.data?.symbols) {
+                const raw2 = res2.data.symbols;
+                symbols2 = (Array.isArray(raw2) ? raw2 : Object.values(raw2 || {}))
+                  .map(o => typeof o === 'string' ? o : o.currency || o.symbol || o.name)
+                  .filter(sym => sym && sym.trim());
+                console.log(`✅ Dashboard Individual Broker 2: ${symbols2.length} symbols loaded`);
+              }
+            } catch (err) {
+              console.error('❌ Dashboard Individual Broker 2 failed:', err.message);
+            }
+          }
+
+          setBroker1Symbols(symbols1);
+          setBroker2Symbols(symbols2);
+
+          if (!symbols1.length && !symbols2.length) {
+            setErrorMsg('No symbols loaded. Please check your account configuration.');
           }
         }
-
-        setBroker1Symbols(symbols1);
-        setBroker2Symbols(symbols2);
-
-        if (!symbols1.length && !symbols2.length) {
-          setErrorMsg('No symbols loaded. Please check your account configuration.');
-        }
       } catch (err) {
-        setErrorMsg('Failed to load symbols. Please try again.');
+        console.error('❌ Dashboard: Complete symbol loading failure:', err);
+        setErrorMsg(`Failed to load symbols: ${err.message}`);
       } finally {
         setSymbolsLoading(false);
+        console.log('🏁 Dashboard: Symbol loading complete');
       }
-    })();
+    };
+
+    loadSymbolsWithFallback();
   }, [selectedSetId, currentSet.symbolsLocked, broker1Id, broker2Id, broker1Term, broker2Term, broker1.position, broker2.position]);
 
   // ✅ FIXED Premium calculation
@@ -863,6 +1016,7 @@ export default function Dashboard() {
     }
   }, [futureQuote, spotQuote, lockedFutureQuote, lockedSpotQuote, currentSet.symbolsLocked]);
 
+  // ✅ OPTIMIZED: Fetch quotes using batch API for better performance
   const fetchQuotes = useCallback(async () => {
     if (!futureSymbol || !spotSymbol || !broker1Id || !broker2Id) {
       setFutureQuote(null);
@@ -871,16 +1025,46 @@ export default function Dashboard() {
     }
 
     try {
-      const futureRes = await fetchQuote(futureSymbol, broker1Term, broker1Id);
-      setFutureQuote(futureRes.data.data);
-    } catch (err) {
-      setFutureQuote(null);
-    }
+      // Use batch API for efficient quote fetching (database-first approach)
+      const { fetchMultipleQuotes } = await import('../services/api');
+      const batchRes = await fetchMultipleQuotes([
+        { symbol: futureSymbol, terminal: broker1Term, brokerId: broker1Id },
+        { symbol: spotSymbol, terminal: broker2Term, brokerId: broker2Id }
+      ]);
 
-    try {
-      const spotRes = await fetchQuote(spotSymbol, broker2Term, broker2Id);
-      setSpotQuote(spotRes.data.data);
+      if (batchRes.data.success) {
+        const [futureResult, spotResult] = batchRes.data.data;
+        
+        setFutureQuote(futureResult.success ? futureResult.data : null);
+        setSpotQuote(spotResult.success ? spotResult.data : null);
+
+        // Log optimization info
+        if (futureResult.success && spotResult.success) {
+          const futureAge = futureResult.data.age || 0;
+          const spotAge = spotResult.data.age || 0;
+          console.log(`📊 Quotes fetched: Future ${futureResult.data.cached ? 'cached' : 'fresh'} (${futureAge}ms), Spot ${spotResult.data.cached ? 'cached' : 'fresh'} (${spotAge}ms)`);
+        }
+      } else {
+        // Fallback to individual requests
+        console.warn('⚠️ Batch request failed, falling back to individual requests');
+        
+        try {
+          const futureRes = await fetchQuote(futureSymbol, broker1Term, broker1Id);
+          setFutureQuote(futureRes.data.data);
+        } catch (err) {
+          setFutureQuote(null);
+        }
+
+        try {
+          const spotRes = await fetchQuote(spotSymbol, broker2Term, broker2Id);
+          setSpotQuote(spotRes.data.data);
+        } catch (err) {
+          setSpotQuote(null);
+        }
+      }
     } catch (err) {
+      console.error('❌ Quote fetch error:', err);
+      setFutureQuote(null);
       setSpotQuote(null);
     }
   }, [
@@ -1010,6 +1194,12 @@ export default function Dashboard() {
                       <div className="premium-display">
                         <div>Buy Premium: {buyPremium.toFixed(2)}</div>
                         <div>Sell Premium: {sellPremium.toFixed(2)}</div>
+                        {(futureQuote?.source || spotQuote?.source) && (
+                          <div style={{ fontSize: '10px', color: '#666', marginTop: '4px' }}>
+                            Data: {futureQuote?.source === 'api' ? '🌐' : '💾'} Future, {spotQuote?.source === 'api' ? '🌐' : '💾'} Spot
+                            {futureQuote?.age !== undefined && ` (${Math.round((futureQuote.age + (spotQuote?.age || 0))/2)}ms)`}
+                          </div>
+                        )}
                       </div>
                     </div>
                   </>

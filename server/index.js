@@ -678,6 +678,7 @@ async function handleSubscribeSet(ws, msg) {
 }
 
 // Handle quote subscription
+// ✅ OPTIMIZED: WebSocket quote handler using database-first approach
 async function handleSubscribeQuote(ws, msg) {
   console.log('🔍 Quote subscription received:', msg);
   const { futureSymbol, spotSymbol } = msg;
@@ -685,7 +686,7 @@ async function handleSubscribeQuote(ws, msg) {
   console.log('📊 Quote params:', { accountSetId, futureSymbol, spotSymbol });
   
   if (!accountSetId) {
-	 console.log('❌ No accountSetId provided'); 
+    console.log('❌ No accountSetId provided'); 
     ws.send(JSON.stringify({
       type: 'error',
       data: { message: 'setId is required for quote subscription' }
@@ -696,6 +697,9 @@ async function handleSubscribeQuote(ws, msg) {
   if (ws.quoteInterval) clearInterval(ws.quoteInterval);
   
   try {
+    const databaseQuoteService = require('./services/databaseQuoteService');
+    const intelligentNormalizer = require('./utils/intelligentBrokerNormalizer');
+    
     const accountSet = await AccountSet.findByPk(accountSetId, {
       include: [{
         model: Broker,
@@ -724,56 +728,85 @@ async function handleSubscribeQuote(ws, msg) {
       return;
     }
 
-    // Send quotes every 1 second
+    // Get normalized broker names for database lookup
+    const [normalizedFuture, normalizedSpot] = await Promise.all([
+      intelligentNormalizer.normalizeBrokerName(futureBroker.brokerName, futureBroker.server, futureBroker.companyName),
+      intelligentNormalizer.normalizeBrokerName(spotBroker.brokerName, spotBroker.server, spotBroker.companyName)
+    ]);
+
+    // ✅ DATABASE-FIRST: Send quotes using cached data with API fallback
     const sendQuotes = async () => {
       try {
-		 console.log('📡 Sending quotes for:', { futureSymbol, spotSymbol }); 
-        const [futureToken, spotToken] = await Promise.all([
-          getValidBrokerToken(futureBroker),
-          getValidBrokerToken(spotBroker)
-        ]);
+        console.log('📡 Sending quotes for:', { futureSymbol, spotSymbol });
         
-        const [futureQuote, spotQuote] = await Promise.all([
-          fetchQuote(futureToken, futureSymbol, futureBroker.terminal, futureBroker.id),
-          fetchQuote(spotToken, spotSymbol, spotBroker.terminal, spotBroker.id)
-        ]);
+        // Try database first for both quotes
+        let futureQuote = await databaseQuoteService.getQuoteFromDatabase(normalizedFuture, futureSymbol);
+        let spotQuote = await databaseQuoteService.getQuoteFromDatabase(normalizedSpot, spotSymbol);
+
+        // Only call API if database cache is stale (> 3 seconds for WebSocket real-time)
+        if (!databaseQuoteService.isQuoteFresh(futureQuote, 3000)) {
+          console.log('🌐 Fetching fresh future quote for WebSocket - cache stale');
+          try {
+            const futureToken = await getValidBrokerToken(futureBroker);
+            const apiQuote = await fetchQuote(futureToken, futureSymbol, futureBroker.terminal, futureBroker.id);
+            if (apiQuote) {
+              futureQuote = {
+                ...apiQuote,
+                source: 'api',
+                timestamp: new Date()
+              };
+            }
+          } catch (apiErr) {
+            console.log('⚠️ API failed, using stale cache for future quote');
+          }
+        } else {
+          console.log(`💾 Using cached future quote - age: ${databaseQuoteService.getQuoteAgeMs(futureQuote)}ms`);
+        }
+
+        if (!databaseQuoteService.isQuoteFresh(spotQuote, 3000)) {
+          console.log('🌐 Fetching fresh spot quote for WebSocket - cache stale');
+          try {
+            const spotToken = await getValidBrokerToken(spotBroker);
+            const apiQuote = await fetchQuote(spotToken, spotSymbol, spotBroker.terminal, spotBroker.id);
+            if (apiQuote) {
+              spotQuote = {
+                ...apiQuote,
+                source: 'api',
+                timestamp: new Date()
+              };
+            }
+          } catch (apiErr) {
+            console.log('⚠️ API failed, using stale cache for spot quote');
+          }
+        } else {
+          console.log(`💾 Using cached spot quote - age: ${databaseQuoteService.getQuoteAgeMs(spotQuote)}ms`);
+        }
+
+        if (!futureQuote || !spotQuote) {
+          console.log('⚠️ Missing quotes for WebSocket update');
+          return;
+        }
         
         const quoteMessage = {
           type: 'quote_update',
-          data: { futureSymbol, spotSymbol, futureQuote, spotQuote }
+          data: { 
+            futureSymbol, 
+            spotSymbol, 
+            futureQuote: {
+              ...futureQuote,
+              age: databaseQuoteService.getQuoteAgeMs(futureQuote)
+            }, 
+            spotQuote: {
+              ...spotQuote,
+              age: databaseQuoteService.getQuoteAgeMs(spotQuote)
+            }
+          }
         };
         
-        console.log('📡 Broadcasting quote update:', quoteMessage);
+        console.log(`📡 Broadcasting optimized quote update: ${futureQuote.source || 'cache'}/${spotQuote.source || 'cache'}`);
         ws.send(JSON.stringify(quoteMessage));
       } catch (err) {
-		 console.error('❌ Quote fetch error:', err); 
-        
-        // Handle token invalid errors by refreshing tokens
-        if (err.message === 'TOKEN_INVALID') {
-          try {
-            console.log('🔄 Token invalid, attempting to refresh tokens and retry...');
-            const [newFutureToken, newSpotToken] = await Promise.all([
-              getValidBrokerToken(futureBroker, true),
-              getValidBrokerToken(spotBroker, true)
-            ]);
-            
-            const [futureQuote, spotQuote] = await Promise.all([
-              fetchQuote(newFutureToken, futureSymbol, futureBroker.terminal, futureBroker.id),
-              fetchQuote(newSpotToken, spotSymbol, spotBroker.terminal, spotBroker.id)
-            ]);
-            
-            const quoteMessage = {
-              type: 'quote_update',
-              data: { futureSymbol, spotSymbol, futureQuote, spotQuote }
-            };
-            
-            console.log('✅ Quote fetch successful after token refresh');
-            ws.send(JSON.stringify(quoteMessage));
-            return;
-          } catch (retryErr) {
-            console.error('❌ Quote fetch failed even after token refresh:', retryErr);
-          }
-        }
+        console.error('❌ Quote fetch error:', err); 
         
         ws.send(JSON.stringify({
           type: 'error',
@@ -793,7 +826,7 @@ async function handleSubscribeQuote(ws, msg) {
   }
 }
 
-// ─── NEW: Handle real‐time premium updates ────────────────────────
+// ✅ OPTIMIZED: Handle real-time premium updates using database-first approach
 async function handleSubscribePremium(ws, msg) {
   const { accountSetId, futureSymbol, spotSymbol } = msg;
   if (!accountSetId) {
@@ -809,63 +842,109 @@ async function handleSubscribePremium(ws, msg) {
   // Clear any existing premium interval
   if (ws.premiumInterval) clearInterval(ws.premiumInterval);
   
-  // Function to fetch & broadcast premium
-  const sendPremium = async () => {
-    try {
-      // Get premium data with both buy and sell premiums
-      const resp = await axios.get(
-        `${process.env.BACKEND_URL}/api/premium/latest`,
-        { params: { accountSetId, futureSymbol, spotSymbol } }
-      );
-      
-      const sellpremium = resp.data.sellpremium;
-      // Calculate buy premium (typically sell premium + spread)
-      // You may need to adjust this calculation based on your business logic
-      const buypremium = resp.data.buypremium || (sellpremium * 1.001); // 0.1% spread as example
-      
-      // Also get current quotes if available
-      let futureQuote = null;
-      let spotQuote = null;
-      
-      try {
-        // Try to get current quotes from the premium response or fetch separately
-        futureQuote = resp.data.futureQuote;
-        spotQuote = resp.data.spotQuote;
-      } catch (quoteError) {
-        // Quotes are optional, continue without them
-      }
-  
-      // Broadcast the enhanced update with both buy and sell premiums
-      ws.send(JSON.stringify({
-        type: 'premium_update',
-        data: { 
-          accountSetId, 
-          futureSymbol, 
-          spotSymbol, 
-          sellpremium,
-          buypremium,
-          futureQuote,
-          spotQuote,
-          timestamp: new Date()
-        }
-      }));
-      
-      console.log(`✅ Sent premium update for ${accountSetId}: sell=${sellpremium}, buy=${buypremium}`);
-      
-    } catch (err) {
-      console.error('❌ Error fetching premium:', err);
-      // On error, record/fall‐back or immediately inform the client
-      ws.send(JSON.stringify({
+  try {
+    const databaseQuoteService = require('./services/databaseQuoteService');
+    const intelligentNormalizer = require('./utils/intelligentBrokerNormalizer');
+    
+    const accountSet = await AccountSet.findByPk(accountSetId, {
+      include: [{
+        model: Broker,
+        as: 'brokers',
+        separate: true,
+        order: [['position', 'ASC']]
+      }]
+    });
+
+    if (!accountSet || accountSet.brokers.length < 2) {
+      return ws.send(JSON.stringify({
         type: 'error',
-        brokerId: accountSetId,               // so client.filter(payload.brokerId===accountSetId) still works
-        data: { message: 'Premium service temporarily unavailable' }
+        data: { message: 'Account set not found or missing brokers' }
       }));
     }
-  };
+
+    const futureBroker = accountSet.brokers.find(b => b.position === 1);
+    const spotBroker = accountSet.brokers.find(b => b.position === 2);
+
+    // Get normalized broker names
+    const [normalizedFuture, normalizedSpot] = await Promise.all([
+      intelligentNormalizer.normalizeBrokerName(futureBroker.brokerName, futureBroker.server, futureBroker.companyName),
+      intelligentNormalizer.normalizeBrokerName(spotBroker.brokerName, spotBroker.server, spotBroker.companyName)
+    ]);
   
-  // Fire immediately, then every 5s
-  await sendPremium();
-  ws.premiumInterval = setInterval(sendPremium, 5000);
+    // ✅ DATABASE-FIRST: Function to fetch & broadcast premium
+    const sendPremium = async () => {
+      try {
+        // Get premium calculation from database using our new service
+        const premiumData = await databaseQuoteService.getPremiumFromDatabase(
+          normalizedFuture, futureSymbol,
+          normalizedSpot, spotSymbol
+        );
+
+        if (premiumData) {
+          // Broadcast the optimized premium update
+          ws.send(JSON.stringify({
+            type: 'premium_update',
+            data: { 
+              accountSetId, 
+              futureSymbol, 
+              spotSymbol, 
+              sellPremium: premiumData.sellPremium,
+              buyPremium: premiumData.buyPremium,
+              futureQuote: premiumData.futureQuote,
+              spotQuote: premiumData.spotQuote,
+              dataAge: premiumData.dataAge,
+              source: premiumData.source,
+              timestamp: premiumData.timestamp
+            }
+          }));
+          
+          console.log(`✅ Sent optimized premium update for ${accountSetId}: buy=${premiumData.buyPremium.toFixed(5)}, sell=${premiumData.sellPremium.toFixed(5)} (age: ${premiumData.dataAge}ms)`);
+        } else {
+          // Fallback: Try to get recent premium data from premium table if available
+          if (accountSet.premiumTableName) {
+            const recentData = await databaseQuoteService.getRecentPremiumData(accountSet.premiumTableName, accountSetId, 1);
+            if (recentData.length > 0) {
+              const latest = recentData[0];
+              ws.send(JSON.stringify({
+                type: 'premium_update',
+                data: { 
+                  accountSetId, 
+                  futureSymbol, 
+                  spotSymbol, 
+                  sellPremium: latest.sellPremium,
+                  buyPremium: latest.buyPremium,
+                  futureQuote: { bid: latest.futureBid, ask: latest.futureAsk },
+                  spotQuote: { bid: latest.spotBid, ask: latest.spotAsk },
+                  source: 'premium_table',
+                  timestamp: latest.timestamp
+                }
+              }));
+              console.log(`✅ Sent premium table update for ${accountSetId}`);
+            }
+          }
+        }
+        
+      } catch (err) {
+        console.error('❌ Error fetching premium:', err);
+        ws.send(JSON.stringify({
+          type: 'error',
+          brokerId: accountSetId,
+          data: { message: 'Premium service temporarily unavailable' }
+        }));
+      }
+    };
+    
+    // Fire immediately, then every 5s
+    await sendPremium();
+    ws.premiumInterval = setInterval(sendPremium, 5000);
+
+  } catch (error) {
+    console.error('❌ Error setting up premium subscription:', error);
+    ws.send(JSON.stringify({
+      type: 'error',
+      data: { message: 'Failed to setup premium subscription' }
+    }));
+  }
 }
 
 // ─── NEW: Handle MT4/MT5 positions subscription ────────────────────────

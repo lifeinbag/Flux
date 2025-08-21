@@ -71,40 +71,21 @@ class UnifiedQuoteService {
   }
 
   /**
-   * Get quote from database for a broker/symbol
+   * Get quote from database for a broker/symbol (OPTIMIZED - using centralized service)
    * @param {Object} broker - Broker object
    * @param {string} symbol - Symbol to get quote for
    * @returns {Promise<Object|null>} Quote object or null
    */
   async getQuoteFromDatabase(broker, symbol) {
     try {
-      const normalizedBroker = await intelligentNormalizer.normalizeBrokerName(
-        broker.brokerName, 
-        broker.server, 
-        broker.companyName
-      );
+      // ✅ OPTIMIZED: Use centralized database quote service
+      const databaseQuoteService = require('./databaseQuoteService');
       
-      const tableName = `bid_ask_${normalizedBroker}`;
+      const quote = await databaseQuoteService.getQuoteFromDatabase(broker.brokerName, symbol);
       
-      const [results] = await sequelize.query(`
-        SELECT symbol, bid, ask, timestamp 
-        FROM "${tableName}" 
-        WHERE symbol = :symbol 
-        ORDER BY timestamp DESC 
-        LIMIT 1
-      `, {
-        replacements: { symbol },
-        type: sequelize.QueryTypes.SELECT
-      });
-
-      if (results && results.length > 0) {
-        const quote = results[0];
+      if (quote) {
         return {
-          bid: parseFloat(quote.bid),
-          ask: parseFloat(quote.ask),
-          symbol: quote.symbol,
-          timestamp: quote.timestamp,
-          source: 'database',
+          ...quote,
           broker: broker.brokerName
         };
       }
@@ -149,30 +130,25 @@ class UnifiedQuoteService {
   }
 
   /**
-   * Check if a quote is fresh (within max age)
+   * Check if a quote is fresh (OPTIMIZED - using centralized service)
    * @param {Object} quote - Quote object with timestamp
    * @returns {boolean} True if fresh, false if stale/missing
    */
   isQuoteFresh(quote) {
-    if (!quote || !quote.timestamp) {
-      return false;
-    }
-
-    const ageMs = this.getQuoteAgeMs(quote);
-    return ageMs <= this.maxDataAgeMs;
+    // ✅ OPTIMIZED: Use centralized database quote service
+    const databaseQuoteService = require('./databaseQuoteService');
+    return databaseQuoteService.isQuoteFresh(quote, this.maxDataAgeMs);
   }
 
   /**
-   * Get age of quote in milliseconds
+   * Get age of quote in milliseconds (OPTIMIZED - using centralized service)
    * @param {Object} quote - Quote object with timestamp
    * @returns {number} Age in milliseconds
    */
   getQuoteAgeMs(quote) {
-    if (!quote || !quote.timestamp) {
-      return Infinity;
-    }
-
-    return Date.now() - new Date(quote.timestamp).getTime();
+    // ✅ OPTIMIZED: Use centralized database quote service
+    const databaseQuoteService = require('./databaseQuoteService');
+    return databaseQuoteService.getQuoteAgeMs(quote);
   }
 
   /**

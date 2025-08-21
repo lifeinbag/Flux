@@ -50,19 +50,25 @@ class BrokerSymbolsCache {
     const normalizedBroker = await intelligentNormalizer.normalizeBrokerName(brokerName, serverName);
     const cacheKey = `${normalizedBroker}_${terminal}`;
     
+    logger.info(`📋 Getting symbols for: ${brokerName} -> ${normalizedBroker} (${terminal})`);
+    
     // 1. Check in-memory cache first
     if (this.symbolsCache.has(cacheKey)) {
       const cached = this.symbolsCache.get(cacheKey);
       if (cached.expiresAt > Date.now()) {
-        logger.info(`🎯 Using in-memory cached symbols for ${normalizedBroker} ${terminal}`);
+        const symbolCount = Array.isArray(cached.symbols) ? cached.symbols.length : Object.keys(cached.symbols || {}).length;
+        logger.info(`🎯 Using in-memory cached symbols for ${normalizedBroker} ${terminal}: ${symbolCount} symbols`);
         return cached.symbols;
+      } else {
+        logger.info(`⏰ In-memory cache expired for ${normalizedBroker} ${terminal}`);
       }
     }
 
     // 2. Check database cache
     const dbCached = await this.getFromDatabase(normalizedBroker, terminal);
     if (dbCached) {
-      logger.info(`📚 Using database cached symbols for ${normalizedBroker} ${terminal}`);
+      const symbolCount = Array.isArray(dbCached.symbols_data) ? dbCached.symbols_data.length : Object.keys(dbCached.symbols_data || {}).length;
+      logger.info(`📚 Using database cached symbols for ${normalizedBroker} ${terminal}: ${symbolCount} symbols`);
       // Update in-memory cache
       this.symbolsCache.set(cacheKey, {
         symbols: dbCached.symbols_data,
@@ -76,10 +82,13 @@ class BrokerSymbolsCache {
     const freshSymbols = await this.fetchFreshSymbols(terminal, token);
     
     if (freshSymbols) {
+      const symbolCount = Array.isArray(freshSymbols) ? freshSymbols.length : Object.keys(freshSymbols || {}).length;
+      logger.info(`✅ Fetched fresh symbols for ${normalizedBroker} ${terminal}: ${symbolCount} symbols`);
       await this.cacheSymbols(normalizedBroker, terminal, freshSymbols, serverName, brokerName);
       return freshSymbols;
     }
 
+    logger.error(`❌ Failed to get symbols for ${normalizedBroker} ${terminal} - all methods failed`);
     return null;
   }
 
