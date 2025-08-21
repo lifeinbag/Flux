@@ -15,6 +15,7 @@ class DatabaseQuoteService {
    * @returns {Promise<Object|null>} Quote object or null
    */
   async getQuoteFromDatabase(brokerName, symbol) {
+    const startTime = Date.now();
     try {
       const normalizedBroker = await intelligentNormalizer.normalizeBrokerName(brokerName);
       const tableName = `bid_ask_${normalizedBroker}`;
@@ -30,8 +31,20 @@ class DatabaseQuoteService {
         type: sequelize.QueryTypes.SELECT
       });
 
+      const queryTime = Date.now() - startTime;
+
       if (results && results.length > 0) {
         const quote = results[0];
+        const age = this.getQuoteAgeMs({ timestamp: quote.timestamp });
+        const isStale = age > this.maxCacheAgeMs;
+        
+        // Enhanced logging for cache monitoring
+        if (isStale) {
+          logger.warn(`🔄 Cache stale for ${brokerName}/${symbol}: ${Math.round(age/1000)}s old`);
+        } else {
+          logger.debug(`✅ Cache hit for ${brokerName}/${symbol}: ${Math.round(age/1000)}s old`);
+        }
+        
         return {
           bid: parseFloat(quote.bid),
           ask: parseFloat(quote.ask),
@@ -39,13 +52,23 @@ class DatabaseQuoteService {
           timestamp: quote.timestamp,
           source: 'database',
           broker: brokerName,
-          age: this.getQuoteAgeMs({ timestamp: quote.timestamp })
+          age: age,
+          isStale: isStale,
+          queryTime: queryTime
         };
       }
 
+      logger.warn(`📭 No quote found in database for ${brokerName}/${symbol}`);
       return null;
     } catch (error) {
-      logger.error(`❌ Database quote lookup failed for ${brokerName}/${symbol}:`, error.message);
+      const queryTime = Date.now() - startTime;
+      logger.error(`❌ Database quote lookup failed for ${brokerName}/${symbol} (${queryTime}ms):`, error.message);
+      
+      // Log specific table access issues
+      if (error.message.includes('Table') && error.message.includes("doesn't exist")) {
+        logger.error(`🚨 Table missing for broker: ${brokerName} - Check database setup`);
+      }
+      
       return null;
     }
   }
