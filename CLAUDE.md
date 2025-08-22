@@ -307,8 +307,57 @@ const quotes = await API.post('/trading/quotes/batch', { requests });
 
 ---
 
+## 🚨 CRITICAL: SYSTEMATIC DEBUGGING METHODOLOGY
+
+### **GOLDEN RULE:**
+**"If anywhere you get stuck, ASK THE USER about what procedure should be taken. DO NOT make random changes in project codes that make things worse."**
+
+### **THE "DEBUG-FIRST, CODE-LAST" METHOD:**
+
+#### **Phase 1: UNDERSTAND Before Acting**
+1. **🔍 ANALYZE SYMPTOMS**: Read error messages, logs, and user reports carefully
+2. **❓ ASK CLARIFYING QUESTIONS**: Don't assume - ask user about system logic
+3. **📊 EXAMINE EVIDENCE**: Look at database data, screenshots, actual system state
+4. **🎯 IDENTIFY CONTRADICTIONS**: Find gaps between expected vs actual behavior
+
+#### **Phase 2: DEBUG With Precision**  
+1. **📝 ADD TARGETED LOGGING**: Add specific debug logs to trace data flow
+2. **🔍 TRACE DATA PATHS**: Follow the exact path from input → processing → output
+3. **🎛️ INCREMENTAL DEBUGGING**: Add one debug feature at a time
+4. **📸 EVIDENCE GATHERING**: Use console logs to see actual values and queries
+
+#### **Phase 3: IDENTIFY Exact Problem**
+1. **🎯 PINPOINT THE ISSUE**: Find the specific line/method causing the problem
+2. **🔧 SURGICAL FIX**: Make minimal, targeted changes to fix the specific issue
+3. **✅ VERIFY SUCCESS**: Confirm fix works before making additional changes
+
+#### **Phase 4: DOCUMENT & Clean**
+1. **📋 TRACK PROGRESS**: Use TodoWrite to manage investigation steps
+2. **🎯 CONFIRM ROOT CAUSE**: Verify the solution addresses the core issue
+3. **📊 MEASURE RESULTS**: Show improvement metrics when possible
+4. **🧹 CLEANUP**: Remove debug code when no longer needed
+
+### **🚨 DEBUGGING GOLDEN RULES:**
+- **NEVER** assume you understand the system
+- **ALWAYS** ask for clarification when stuck
+- **DEBUG** before coding
+- **ONE CHANGE** at a time
+- **EVIDENCE-BASED** problem solving
+- **UNDERSTAND** existing patterns before changing
+
+### **❌ WHAT NOT TO DO:**
+- Don't make multiple code changes simultaneously
+- Don't assume problem causes without evidence
+- Don't create new systems when existing ones can be fixed
+- Don't skip the debugging/logging phase
+- Don't guess - ask the user when uncertain
+
+---
+
 **Remember: Always check existing optimized systems before implementing new solutions!**
 
 **NEVER create new services without first analyzing existing data flows and systems.**
+
+**ALWAYS follow the DEBUG-FIRST, CODE-LAST methodology for any debugging task.**
 
 *This file should be updated whenever new optimized systems are implemented.*

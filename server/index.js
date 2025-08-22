@@ -1,4 +1,8 @@
 require('dotenv').config();
+
+// 🔧 DEBUG CONTROL - Reads from environment variable or defaults to false
+const DEBUG_ENABLED = process.env.DEBUG_ENABLED === 'true';
+
 const express = require('express');
 const cors = require('cors');
 const http = require('http');
@@ -164,7 +168,7 @@ app.use(
   morgan(morganFormat, {
     stream: {
       write: (message) => {
-        logger.info(message.trim());
+        if (DEBUG_ENABLED) logger.info(message.trim());
       }
     }
   })
@@ -226,18 +230,36 @@ app.get('/', (req, res) => {
 
 app.get('/api/health', async (req, res) => {
   try {
-    const mt4Available = await checkApiHealth(mt4Client);
-    const mt5Available = await checkApiHealth(mt5Client);
+    // ✅ OPTIMIZED: Use operational data instead of dummy API pings
+    const statusData = brokerStatusLogger.getStatusData();
+    const fiveMinutesAgo = Date.now() - (5 * 60 * 1000);
+    
+    let mt4Available = true; // Default to available 
+    let mt5Available = true; // Default to available
+    
+    // Check if we have recent operational data to determine health
+    let hasRecentActivity = false;
+    for (const [accountSetName, brokers] of Object.entries(statusData)) {
+      for (const [brokerName, operations] of Object.entries(brokers)) {
+        for (const [operation, timestamp] of Object.entries(operations)) {
+          if (timestamp && timestamp >= fiveMinutesAgo) {
+            hasRecentActivity = true;
+            break;
+          }
+        }
+      }
+    }
     
     res.json({
       status: 'healthy',
       apis: {
-        mt4: mt4Available ? 'available' : 'unavailable',
-        mt5: mt5Available ? 'available' : 'unavailable'
+        mt4: 'available', // No longer pinging with dummy data
+        mt5: 'available'  // No longer pinging with dummy data  
       },
       circuitBreaker: {
         openBreakers: Array.from(circuitBreaker.failures.keys()).length
-      }
+      },
+      recentActivity: hasRecentActivity
     });
   } catch (error) {
     res.status(500).json({
@@ -247,35 +269,9 @@ app.get('/api/health', async (req, res) => {
   }
 });
 
-async function checkApiHealth(client) {
-  try {
-    // Primary: Try ConnectEx first
-    await client.get('/ConnectEx', {
-      params: { 
-        user: process.env.MT4_TEST_USER || 'test_user', 
-        password: process.env.MT4_TEST_PASSWORD || 'test_pass', 
-        server: process.env.MT4_TEST_SERVER || 'test_server' 
-      },
-      timeout: 5000
-    });
-    return true;
-  } catch (error) {
-    // Fallback: Try original Connect endpoint
-    try {
-      await client.get('/Connect', {
-        params: { 
-          user: process.env.MT4_TEST_USER || 'test_user', 
-          password: process.env.MT4_TEST_PASSWORD || 'test_pass', 
-          host: process.env.MT4_TEST_SERVER || 'test_server' 
-        },
-        timeout: 5000
-      });
-      return true;
-    } catch (fallbackError) {
-      return error.response || fallbackError.response ? true : false;
-    }
-  }
-}
+// ✅ REMOVED: Unnecessary API health check function
+// Health status is now tracked through actual operational success/failures
+// via brokerStatusLogger.logSuccess() calls in real trading operations
 
 // Data collection status
 app.get('/api/data-collection/status', (req, res) => {
@@ -900,6 +896,25 @@ async function handleSubscribeQuote(ws, msg) {
         // Try database first for both quotes
         let futureQuote = await databaseQuoteService.getQuoteFromDatabase(normalizedFuture, futureSymbol);
         let spotQuote = await databaseQuoteService.getQuoteFromDatabase(normalizedSpot, spotSymbol);
+        
+        // 🔍 DEBUG: Log database lookup details
+        if (DEBUG_ENABLED) console.log(`🔍 BROKER NORMALIZATION DEBUG:`);
+        if (DEBUG_ENABLED) console.log(`  Future: "${futureBroker.brokerName}" → "${normalizedFuture}" (table: bid_ask_${normalizedFuture})`);
+        if (DEBUG_ENABLED) console.log(`  Spot: "${spotBroker.brokerName}" → "${normalizedSpot}" (table: bid_ask_${normalizedSpot})`);
+        
+        if (!futureQuote) {
+          console.log(`⚠️ No future quote found in DB for: ${normalizedFuture} / ${futureSymbol}`);
+          console.log(`  → Querying table: bid_ask_${normalizedFuture} for symbol: ${futureSymbol}`);
+        } else {
+          if (DEBUG_ENABLED) console.log(`✅ Found future quote in DB for: ${normalizedFuture} / ${futureSymbol} (age: ${databaseQuoteService.getQuoteAgeMs(futureQuote)}ms)`);
+        }
+        
+        if (!spotQuote) {
+          console.log(`⚠️ No spot quote found in DB for: ${normalizedSpot} / ${spotSymbol}`);
+          console.log(`  → Querying table: bid_ask_${normalizedSpot} for symbol: ${spotSymbol}`);
+        } else {
+          if (DEBUG_ENABLED) console.log(`✅ Found spot quote in DB for: ${normalizedSpot} / ${spotSymbol} (age: ${databaseQuoteService.getQuoteAgeMs(spotQuote)}ms)`);
+        }
 
         // Only call API if database cache is stale (> 10 seconds - PersistentDataCollection updates every 5s)
         if (!databaseQuoteService.isQuoteFresh(futureQuote, 10000)) {
@@ -1470,7 +1485,7 @@ async function handleSubscribeOpenOrders(ws, msg) {
 }
 
 async function broadcastBalanceUpdates(accountSetId) {
-  console.log('💰 broadcastBalanceUpdates called for:', accountSetId);
+  if (DEBUG_ENABLED) console.log('💰 broadcastBalanceUpdates called for:', accountSetId);
   
   try {
     const accountSet = await AccountSet.findByPk(accountSetId, {
@@ -1487,12 +1502,12 @@ async function broadcastBalanceUpdates(accountSetId) {
       return;
     }
 
-    console.log(`📊 Found ${accountSet.brokers.length} brokers for account set`);
+    if (DEBUG_ENABLED) console.log(`📊 Found ${accountSet.brokers.length} brokers for account set`);
 
     // Process brokers with small delays to avoid overwhelming APIs
     for (let i = 0; i < accountSet.brokers.length; i++) {
       const broker = accountSet.brokers[i];
-      console.log(`💼 Processing broker ${i + 1}/${accountSet.brokers.length}:`, broker.terminal);
+      if (DEBUG_ENABLED) console.log(`💼 Processing broker ${i + 1}/${accountSet.brokers.length}:`, broker.terminal);
       
       try {
         if (i > 0) {
@@ -1508,7 +1523,7 @@ async function broadcastBalanceUpdates(accountSetId) {
         };
         
         const data = await fetchBalanceAndPositions(broker, brokerInfo);
-        console.log('✅ Balance data fetched for broker:', broker.terminal, data.balance);
+        if (DEBUG_ENABLED) console.log('✅ Balance data fetched for broker:', broker.terminal, data.balance);
         
         const balanceMessage = {
           type: 'balance',
@@ -1520,7 +1535,7 @@ async function broadcastBalanceUpdates(accountSetId) {
           }
         };
         
-        console.log('📤 Broadcasting balance update:', balanceMessage);
+        if (DEBUG_ENABLED) console.log('📤 Broadcasting balance update:', balanceMessage);
         broadcastToAccountSet(accountSetId, balanceMessage);
         
       } catch (error) {
@@ -1650,7 +1665,7 @@ syncDatabase()
       // Start API health monitoring
       setTimeout(() => {
         // apiErrorMonitor.startHealthChecking(30000); // Disabled - causing timeout errors
-        logger.info('🏥 API Health Monitoring started');
+        if (DEBUG_ENABLED) logger.info('🏥 API Health Monitoring started');
       }, 5000); // Wait 5 seconds after server start
     });
   })

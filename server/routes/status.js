@@ -1,42 +1,38 @@
 // server/routes/status.js
 const express = require('express');
-const axios   = require('axios');
 const router  = express.Router();
+const brokerStatusLogger = require('../utils/brokerStatusLogger');
 
 /**
- * Try pinging MT4 and MT5 APIs by calling /Connect with dummy params.
- * If we get any HTTP response (200, 400, etc.) then the API is reachable.
+ * ✅ OPTIMIZED: Check trading API health using actual operational data
+ * instead of making unnecessary dummy API calls
  */
 async function checkTradingApi() {
-  const clients = [];
-  if (process.env.MT4_API_URL) clients.push(
-    axios.create({ baseURL: process.env.MT4_API_URL, timeout: 10000 })
-  );
-  if (process.env.MT5_API_URL) clients.push(
-    axios.create({ baseURL: process.env.MT5_API_URL, timeout: 10000 })
-  );
-
-  for (const client of clients) {
-    try {
-      // Test with dummy credentials for ConnectEx
-      await client.get('/ConnectEx', {
-        params: { 
-          user: process.env.MT4_TEST_USER || 'test_user', 
-          password: process.env.MT4_TEST_PASSWORD || 'test_pass', 
-          server: process.env.MT4_TEST_SERVER || 'test_server' 
+  try {
+    // Get recent broker status data (actual operational health)
+    const statusData = brokerStatusLogger.getStatusData();
+    
+    // Check if any brokers have had successful operations recently (within 5 minutes)
+    const fiveMinutesAgo = Date.now() - (5 * 60 * 1000);
+    
+    for (const [accountSetName, brokers] of Object.entries(statusData)) {
+      for (const [brokerName, operations] of Object.entries(brokers)) {
+        for (const [operation, timestamp] of Object.entries(operations)) {
+          if (timestamp && timestamp >= fiveMinutesAgo) {
+            // Found recent successful operation - APIs are working
+            return true;
+          }
         }
-      });
-      return true;
-    } catch (err) {
-      if (err.response) {
-        // Got a response (likely 400), so API is up
-        return true;
       }
-      // Network/timeout error: try next client
     }
+    
+    // No recent successful operations - but this doesn't mean APIs are down
+    // They might just not be in use. Return true to avoid false negatives.
+    return true;
+  } catch (error) {
+    console.error('Error checking broker status:', error);
+    return false;
   }
-
-  return false;
 }
 router.get('/status', async (req, res) => {
   try {

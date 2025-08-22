@@ -117,98 +117,98 @@ class BrokerStatusLogger {
     this.updateBrokerStatus(accountSetName, brokerName, accountNumber, terminal, statusUpdate);
   }
 
-  // Display the main status table
+  // 🚀 ULTRA-CLEAN: Display the main status table exactly like the desired format
   displayStatusTable() {
     console.clear();
     
-    // Show header
-    console.log('\n🌐 FLUX NETWORK - BROKER STATUS MONITOR');
-    console.log('━'.repeat(160));
-    console.log(`Last Updated: ${new Date().toLocaleString()}\n`);
-
     // Convert Map to array for display
     const statusArray = Array.from(this.brokerStatuses.values());
     
     if (statusArray.length === 0) {
-      console.log('📊 No broker data available yet...\n');
+      process.stdout.write('📊 No broker data available yet...\n\n');
     } else {
-      // Use custom table formatting instead of console.table to prevent overlap
+      // Use custom table formatting with perfect alignment (NO LOGGER OUTPUT)
       this.displayCustomTable(statusArray);
     }
 
-    // Show recent critical errors if any
+    // Show recent critical errors if any (simplified)
     if (this.criticalErrors.length > 0) {
-      console.log('\n🚨 RECENT CRITICAL ERRORS (Last 5):');
-      console.log('━'.repeat(160));
-      
-      const recentErrors = this.criticalErrors.slice(0, 5);
-      this.displayErrorsTable(recentErrors);
+      process.stdout.write('\n🚨 RECENT ERRORS:\n');
+      const recentErrors = this.criticalErrors.slice(0, 3);
+      recentErrors.forEach(error => {
+        process.stdout.write(`${error.timestamp} | ${error.brokerName} | ${error.errorType}: ${error.error.substring(0, 50)}...\n`);
+      });
     }
 
-    console.log('\n' + '━'.repeat(160));
-    console.log('Press Ctrl+C to exit | Updates every 30 seconds\n');
+    process.stdout.write('\nPress Ctrl+C to exit | Updates every 30 seconds\n');
   }
 
-  // Custom table display to prevent text overlap
+  // 🚀 EXACTLY LIKE SCREENSHOT: Simple table format like the desired image
   displayCustomTable(statusArray) {
-    // Define column widths
+    // Define column widths to match the clean screenshot format
     const colWidths = {
-      broker: 20,
-      account: 12,
+      broker: 22,
+      account: 12, 
       terminal: 8,
-      status: 12,
-      token: 10,
       quote: 12,
       balance: 12,
       orders: 12,
-      error: 30
+      error: 35
     };
 
-    // Helper function to truncate and pad text
-    const formatCell = (text, width, align = 'left') => {
-      if (!text) text = 'N/A';
-      const str = String(text);
-      const truncated = str.length > width - 1 ? str.substring(0, width - 4) + '...' : str;
+    // Helper function to format cells exactly like screenshot
+    const formatCell = (text, width) => {
+      if (!text || text === 'undefined' || text === 'null') text = 'Never';
+      if (text === 'None') text = '-';
       
-      if (align === 'center') {
-        return truncated.padStart((width + truncated.length) / 2).padEnd(width);
-      }
-      return align === 'right' ? truncated.padStart(width) : truncated.padEnd(width);
+      const str = String(text).trim();
+      const truncated = str.length > width - 2 ? str.substring(0, width - 4) + '..' : str;
+      return ' ' + truncated.padEnd(width - 1);
     };
 
-    // Print header
-    console.log(
-      '│ ' + formatCell('brokerName', colWidths.broker) + 
-      '│ ' + formatCell('accountNumber', colWidths.account) + 
-      '│ ' + formatCell('terminal', colWidths.terminal) + 
-      '│ ' + formatCell('lastQuote', colWidths.quote) + 
-      '│ ' + formatCell('lastBalance', colWidths.balance) + 
-      '│ ' + formatCell('lastOrders', colWidths.orders) + 
-      '│ ' + formatCell('lastError', colWidths.error) + ' │'
-    );
+    // Build the table as a single string to avoid logger interference
+    let tableOutput = '';
+    
+    // Top border - clean simple style
+    tableOutput += '┌' + '─'.repeat(colWidths.broker) + '┬' + '─'.repeat(colWidths.account) + 
+                   '┬' + '─'.repeat(colWidths.terminal) + '┬' + '─'.repeat(colWidths.quote) + 
+                   '┬' + '─'.repeat(colWidths.balance) + '┬' + '─'.repeat(colWidths.orders) + 
+                   '┬' + '─'.repeat(colWidths.error) + '┐\n';
 
-    console.log('├─' + '─'.repeat(colWidths.broker) + '┼─' + '─'.repeat(colWidths.account) + 
-                '┼─' + '─'.repeat(colWidths.terminal) + '┼─' + '─'.repeat(colWidths.quote) + 
-                '┼─' + '─'.repeat(colWidths.balance) + '┼─' + '─'.repeat(colWidths.orders) + 
-                '┼─' + '─'.repeat(colWidths.error) + '─┤');
+    // Header row - exactly like the clean screenshot
+    tableOutput += '│' + formatCell('BROKER', colWidths.broker) + 
+                   '│' + formatCell('ACCOUNT', colWidths.account) + 
+                   '│' + formatCell('TERM', colWidths.terminal) + 
+                   '│' + formatCell('QUOTE', colWidths.quote) + 
+                   '│' + formatCell('BALANCE', colWidths.balance) + 
+                   '│' + formatCell('ORDERS', colWidths.orders) + 
+                   '│' + formatCell('ERROR', colWidths.error) + '│\n';
 
-    // Print each row
+    // Header separator
+    tableOutput += '├' + '─'.repeat(colWidths.broker) + '┼' + '─'.repeat(colWidths.account) + 
+                   '┼' + '─'.repeat(colWidths.terminal) + '┼' + '─'.repeat(colWidths.quote) + 
+                   '┼' + '─'.repeat(colWidths.balance) + '┼' + '─'.repeat(colWidths.orders) + 
+                   '┼' + '─'.repeat(colWidths.error) + '┤\n';
+
+    // Data rows - clean format matching screenshot
     statusArray.forEach(status => {
-      console.log(
-        '│ ' + formatCell(status.brokerName, colWidths.broker) + 
-        '│ ' + formatCell(status.accountNumber, colWidths.account) + 
-        '│ ' + formatCell(status.terminal, colWidths.terminal) + 
-        '│ ' + formatCell(status.lastQuote, colWidths.quote) + 
-        '│ ' + formatCell(status.lastBalance, colWidths.balance) + 
-        '│ ' + formatCell(status.lastOrders, colWidths.orders) + 
-        '│ ' + formatCell(status.lastError, colWidths.error) + ' │'
-      );
+      tableOutput += '│' + formatCell(status.brokerName, colWidths.broker) + 
+                     '│' + formatCell(status.accountNumber, colWidths.account) + 
+                     '│' + formatCell(status.terminal, colWidths.terminal) + 
+                     '│' + formatCell(status.lastQuote, colWidths.quote) + 
+                     '│' + formatCell(status.lastBalance, colWidths.balance) + 
+                     '│' + formatCell(status.lastOrders, colWidths.orders) + 
+                     '│' + formatCell(status.lastError || '-', colWidths.error) + '│\n';
     });
 
-    console.log('└─' + '─'.repeat(colWidths.broker) + '┴─' + '─'.repeat(colWidths.account) + 
-                '┴─' + '─'.repeat(colWidths.terminal) + '┴─' + '─'.repeat(colWidths.quote) + 
-                '┴─' + '─'.repeat(colWidths.balance) + '┴─' + '─'.repeat(colWidths.orders) + 
-                '┴─' + '─'.repeat(colWidths.error) + '─┘');
+    // Bottom border
+    tableOutput += '└' + '─'.repeat(colWidths.broker) + '┴' + '─'.repeat(colWidths.account) + 
+                   '┴' + '─'.repeat(colWidths.terminal) + '┴' + '─'.repeat(colWidths.quote) + 
+                   '┴' + '─'.repeat(colWidths.balance) + '┴' + '─'.repeat(colWidths.orders) + 
+                   '┴' + '─'.repeat(colWidths.error) + '┘\n';
+
+    // Output as single block to avoid logger interference
+    process.stdout.write(tableOutput);
   }
 
   // Custom errors table display

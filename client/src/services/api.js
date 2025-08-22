@@ -13,6 +13,29 @@ function getBackendURL() {
     return `${window.location.protocol}//${backendHost}/api`;
   }
   
+  // Handle Localtunnel (loca.lt) - Auto-detect backend
+  if (window.location.hostname.includes('loca.lt')) {
+    // For any loca.lt URL, ask user for backend URL via prompt
+    // This ensures flexibility with random tunnel URLs
+    const savedBackend = localStorage.getItem('backend_tunnel_url');
+    if (savedBackend) {
+      return savedBackend;
+    }
+    
+    // Show one-time setup prompt
+    const backendUrl = prompt(
+      'Enter your backend tunnel URL (e.g., https://abc123.loca.lt/api):\n' +
+      'You can find this in your backend tunnel window.'
+    );
+    
+    if (backendUrl) {
+      localStorage.setItem('backend_tunnel_url', backendUrl);
+      return backendUrl;
+    }
+    
+    return 'http://localhost:5000/api'; // Fallback
+  }
+  
   // Default for localhost
   return 'http://localhost:5000/api';
 }

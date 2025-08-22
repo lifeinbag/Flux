@@ -6,6 +6,7 @@ import SellPremiumChart from '../components/SellPremiumChart';
 import { connectWS, onMessage, subscribeToQuotes, subscribeToOpenOrders, isWSConnected, getWSStatus, clearQuoteSubscriptions } from '../services/wsService';
 import { TrendingUp, DollarSign, BarChart3, Activity, AlertTriangle, Lock, Unlock, Clock } from 'lucide-react';
 // API Status Monitor removed
+import DollarRain from '../components/DollarRain';
 import './Dashboard.css';
 
 export const DashboardContext = createContext();
@@ -155,6 +156,7 @@ export default function Dashboard() {
   const [tradingStatus, setTradingStatus] = useState(null);
   const [accountSets, setAccountSets] = useState([]);
   const [selectedSetId, setSelectedSetId] = useState('');
+  const [showDollarRain, setShowDollarRain] = useState(true);
   const [selectedTimeframe, setSelectedTimeframe] = useState(15);
   
   const currentSet = accountSets.find(s => s._id === selectedSetId) || { brokers: [] };
@@ -984,6 +986,11 @@ export default function Dashboard() {
       accountSets, selectedSetId, setSelectedSetId, selectedTimeframe, setSelectedTimeframe, 
       tradeMapping
     }}>
+      <DollarRain 
+        show={showDollarRain} 
+        duration={7000}
+        onComplete={() => setShowDollarRain(false)}
+      />
       <div className="modern-dashboard">
         {errorMsg && (
           <div className="error-alert">

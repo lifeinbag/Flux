@@ -120,7 +120,7 @@ router.get('/symbols', async (req, res) => {
       return res.status(404).json({ success: false, message: 'Broker not found' });
     }
 
-    // ✅ FIX: Use the broker symbol cache for speed and reliability
+    // ✅ DATABASE-FIRST: Use the broker symbol cache for speed and reliability
     const token = await getValidToken(broker, isMT5);
     const symbols = await brokerSymbolsCache.getSymbolsForBroker(
       broker.brokerName, broker.server, terminal, token
@@ -130,13 +130,23 @@ router.get('/symbols', async (req, res) => {
       return res.status(404).json({ success: false, message: 'Could not fetch symbols.' });
     }
 
+    // ✅ Log successful symbols operation
+    const normalizedBroker = await intelligentNormalizer.normalizeBrokerName(broker.brokerName, broker.server);
+    brokerStatusLogger.logSuccess(
+      'Unknown', // Account set name not available in this context
+      normalizedBroker,
+      broker.accountNumber,
+      terminal,
+      'symbols'
+    );
+
     return res.json({ success: true, symbols });
   } catch (err) {
     return res.status(500).json({ success: false, message: err.message });
   }
 });
 
-// ✅ OPTIMIZED: GET /api/trading/quote - Database-first with API fallback
+// 🚀 ULTRA-FAST: GET /api/trading/quote - Using persistent data collection for fastest data
 router.get('/quote', async (req, res) => {
   const startTime = Date.now();
   let brokerId;
@@ -147,7 +157,7 @@ router.get('/quote', async (req, res) => {
     const { symbol } = req.query;
     const isMT5 = terminal === 'MT5';
     const isAdmin = req.user.role === 'admin';
-    const databaseQuoteService = require('../services/databaseQuoteService');
+    const persistentDataCollection = require('../services/persistentDataCollection');
     
     const broker = await findBroker(brokerId, req.user.id, isAdmin);
     
@@ -155,11 +165,19 @@ router.get('/quote', async (req, res) => {
       return res.status(404).json({ success: false, message: 'Broker not found' });
     }
 
-    // ✅ DATABASE-FIRST: Try cache first
-    let quote = await databaseQuoteService.getQuoteFromDatabase(broker.brokerName, symbol);
+    // 🚀 FASTEST: Use the same system that feeds premium calculations (always fresh)
+    const normalizedBroker = await intelligentNormalizer.normalizeBrokerName(
+      broker.brokerName, broker.server, broker.companyName
+    );
     
-    // Only call API if cache is stale (> 5 seconds) or missing
-    if (!databaseQuoteService.isQuoteFresh(quote, 5000)) {
+    let quote = await persistentDataCollection.getQuoteFromBidAskTable(normalizedBroker, symbol);
+    
+    const cacheAge = quote ? persistentDataCollection.getQuoteAgeMs(quote) : 'N/A';
+    console.log(`⚡ FASTEST QUOTE for ${normalizedBroker}/${symbol}: age=${cacheAge}ms`);
+    
+    // Only fallback to API if absolutely no data exists (should be rare)
+    if (!quote) {
+      console.log(`🌐 RARE FALLBACK: No data found for ${normalizedBroker}/${symbol}, fetching from API`);
       const token = await getValidToken(broker, isMT5);
       const client = isMT5 ? axiosMT5 : axiosMT4;
       
@@ -173,9 +191,11 @@ router.get('/quote', async (req, res) => {
           timestamp: new Date(),
           source: 'api'
         };
+        console.log(`✅ API quote fetched for ${normalizedBroker}/${symbol}: bid=${quote.bid}, ask=${quote.ask}`);
       }
     } else {
-      quote.source = 'database';
+      quote.source = 'persistent_collection';
+      console.log(`⚡ PERSISTENT DATA HIT: Ultra-fast quote for ${normalizedBroker}/${symbol}: age=${cacheAge}ms`);
     }
     
     const endTime = Date.now();
@@ -200,7 +220,8 @@ router.get('/quote', async (req, res) => {
       data: { 
         ...quote, 
         latency,
-        age: quote ? databaseQuoteService.getQuoteAgeMs(quote) : null
+        age: quote ? persistentDataCollection.getQuoteAgeMs(quote) : null,
+        ultraFast: true
       }
     });
   } catch (err) {
@@ -216,13 +237,13 @@ router.get('/quote', async (req, res) => {
   }
 });
 
-// ✅ OPTIMIZED: GET /api/trading/quote/:symbol - Database-first approach
+// 🚀 ULTRA-FAST: GET /api/trading/quote/:symbol - Using persistent data collection for fastest data
 router.get('/quote/:symbol', async (req, res) => {
   const { symbol } = req.params;
   const { terminal } = req.query;
   const brokerId = extractBrokerId(req);
   const isAdmin = req.user.role === 'admin';
-  const databaseQuoteService = require('../services/databaseQuoteService');
+  const persistentDataCollection = require('../services/persistentDataCollection');
 
   if (!symbol) {
     return res.status(400).json({
@@ -255,11 +276,19 @@ router.get('/quote/:symbol', async (req, res) => {
       });
     }
 
-    // ✅ DATABASE-FIRST: Try cache first
-    let data = await databaseQuoteService.getQuoteFromDatabase(broker.brokerName, symbol);
+    // 🚀 FASTEST: Use persistent data collection (same system as premium calculations)
+    const normalizedBroker = await intelligentNormalizer.normalizeBrokerName(
+      broker.brokerName, broker.server, broker.companyName
+    );
+    
+    let data = await persistentDataCollection.getQuoteFromBidAskTable(normalizedBroker, symbol);
 
-    // Only fallback to API if cache is stale (> 5 seconds) or missing
-    if (!databaseQuoteService.isQuoteFresh(data, 5000)) {
+    const cacheAge = data ? persistentDataCollection.getQuoteAgeMs(data) : 'N/A';
+    console.log(`⚡ FASTEST QUOTE for ${normalizedBroker}/${symbol}: age=${cacheAge}ms`);
+
+    // Only fallback to API if absolutely no data exists (should be extremely rare)
+    if (!data) {
+      console.log(`🌐 RARE FALLBACK: No data found for ${normalizedBroker}/${symbol}, fetching from API`);
       try {
         const mtToken = await getValidToken(broker, broker.terminal === 'MT5');
         
@@ -277,21 +306,24 @@ router.get('/quote/:symbol', async (req, res) => {
             source: 'api',
             age: 0
           };
+          console.log(`✅ API quote fetched for ${normalizedBroker}/${symbol}: bid=${data.bid}, ask=${data.ask}`);
         }
       } catch (liveError) {
-        // Live fetch failed, use stale cache if available
-        if (data) {
-          data.source = 'stale_cache';
-        }
+        console.log(`❌ API fallback failed for ${normalizedBroker}/${symbol}`);
+        return res.status(404).json({
+          success: false,
+          message: 'Quote not available from any source'
+        });
       }
     } else {
-      data.source = 'database';
+      data.source = 'persistent_collection';
+      console.log(`⚡ PERSISTENT DATA HIT: Ultra-fast quote for ${normalizedBroker}/${symbol}: age=${cacheAge}ms`);
     }
 
     if (!data) {
       return res.status(404).json({
         success: false,
-        message: 'Quote not found in database and live fetch failed'
+        message: 'Quote not available from any source'
       });
     }
     
@@ -299,7 +331,9 @@ router.get('/quote/:symbol', async (req, res) => {
       success: true, 
       data: {
         ...data,
-        cached: data.source !== 'api'
+        cached: data.source !== 'api',
+        age: persistentDataCollection.getQuoteAgeMs(data),
+        ultraFast: true
       }
     });
   } catch (error) {
@@ -626,7 +660,7 @@ router.get('/mt4-symbols-legacy', async (req, res) => {
   }
 });
 
-// ✅ OPTIMIZED: MT5 quote with database-first approach
+// 🚀 ULTRA-FAST: MT5 quote with persistent data collection
 router.get('/mt5-quote/:symbol', async (req, res) => {
   const startTime = Date.now();
   let brokerId;
@@ -636,27 +670,27 @@ router.get('/mt5-quote/:symbol', async (req, res) => {
     const user = await User.findByPk(req.user.id);
     const tradingAccounts = user.tradingAccounts || [];
     const mt5Account = tradingAccounts.find(acc => acc.terminal === 'MT5');
-    const databaseQuoteService = require('../services/databaseQuoteService');
+    const persistentDataCollection = require('../services/persistentDataCollection');
     brokerId = mt5Account?.id;
     
     if (!mt5Account?.token) {
       return res.status(400).json({ error: 'MT5 account not linked' });
     }
 
-    // ✅ DATABASE-FIRST: Try cache first (assuming we can derive broker name)
+    // 🚀 FASTEST: Try persistent data collection first
     let quote = null;
     try {
-      // For legacy MT5 accounts, try to get quote from database if possible
-      // This might need adjustment based on how brokerName is stored in tradingAccounts
+      // For legacy MT5 accounts, try to get quote from persistent data collection
       if (mt5Account.brokerName) {
-        quote = await databaseQuoteService.getQuoteFromDatabase(mt5Account.brokerName, symbol);
+        const normalizedBroker = await intelligentNormalizer.normalizeBrokerName(mt5Account.brokerName);
+        quote = await persistentDataCollection.getQuoteFromBidAskTable(normalizedBroker, symbol);
       }
     } catch (cacheError) {
       // Continue to API
     }
 
-    // Only call API if cache is stale or missing
-    if (!databaseQuoteService.isQuoteFresh(quote, 5000)) {
+    // Only call API if absolutely no data exists
+    if (!quote) {
       const response = await axiosMT5.get('/GetQuote', {params: { id: mt5Account.token, symbol }});
       
       if (response.data?.Bid && response.data?.Ask) {
@@ -669,7 +703,7 @@ router.get('/mt5-quote/:symbol', async (req, res) => {
         };
       }
     } else {
-      quote.source = 'database';
+      quote.source = 'persistent_collection';
     }
 
     const endTime = Date.now();
@@ -683,7 +717,8 @@ router.get('/mt5-quote/:symbol', async (req, res) => {
     res.json({ 
       ...quote, 
       latency,
-      age: quote ? databaseQuoteService.getQuoteAgeMs(quote) : null
+      age: quote ? persistentDataCollection.getQuoteAgeMs(quote) : null,
+      ultraFast: true
     });
   } catch (error) {
     const endTime = Date.now();
@@ -698,7 +733,7 @@ router.get('/mt5-quote/:symbol', async (req, res) => {
   }
 });
 
-// ✅ OPTIMIZED: MT4 quote with database-first approach
+// 🚀 ULTRA-FAST: MT4 quote with persistent data collection
 router.get('/mt4-quote/:symbol', async (req, res) => {
   const startTime = Date.now();
   let brokerId;
@@ -708,26 +743,27 @@ router.get('/mt4-quote/:symbol', async (req, res) => {
     const user = await User.findByPk(req.user.id);
     const tradingAccounts = user.tradingAccounts || [];
     const mt4Account = tradingAccounts.find(acc => acc.terminal === 'MT4');
-    const databaseQuoteService = require('../services/databaseQuoteService');
+    const persistentDataCollection = require('../services/persistentDataCollection');
     brokerId = mt4Account?.id;
     
     if (!mt4Account?.token) {
       return res.status(400).json({ error: 'MT4 account not linked' });
     }
 
-    // ✅ DATABASE-FIRST: Try cache first
+    // 🚀 FASTEST: Try persistent data collection first
     let quote = null;
     try {
-      // For legacy MT4 accounts, try to get quote from database if possible
+      // For legacy MT4 accounts, try to get quote from persistent data collection
       if (mt4Account.brokerName) {
-        quote = await databaseQuoteService.getQuoteFromDatabase(mt4Account.brokerName, symbol);
+        const normalizedBroker = await intelligentNormalizer.normalizeBrokerName(mt4Account.brokerName);
+        quote = await persistentDataCollection.getQuoteFromBidAskTable(normalizedBroker, symbol);
       }
     } catch (cacheError) {
       // Continue to API
     }
 
-    // Only call API if cache is stale or missing
-    if (!databaseQuoteService.isQuoteFresh(quote, 5000)) {
+    // Only call API if absolutely no data exists
+    if (!quote) {
       const response = await axiosMT4.get('/GetQuote', {params: { id: mt4Account.token, symbol }});
       
       if (response.data?.Bid && response.data?.Ask) {
@@ -740,7 +776,7 @@ router.get('/mt4-quote/:symbol', async (req, res) => {
         };
       }
     } else {
-      quote.source = 'database';
+      quote.source = 'persistent_collection';
     }
 
     const endTime = Date.now();
@@ -754,7 +790,8 @@ router.get('/mt4-quote/:symbol', async (req, res) => {
     res.json({ 
       ...quote, 
       latency,
-      age: quote ? databaseQuoteService.getQuoteAgeMs(quote) : null
+      age: quote ? persistentDataCollection.getQuoteAgeMs(quote) : null,
+      ultraFast: true
     });
   } catch (error) {
     const endTime = Date.now();
@@ -1834,12 +1871,12 @@ router.put('/update-tp', async (req, res) => {
 });
 
 
-// ✅ NEW: Batch quotes endpoint for efficient frontend requests
+// 🚀 ULTRA-FAST: Batch quotes endpoint using persistent data collection
 router.post('/quotes/batch', async (req, res) => {
   try {
     const { requests } = req.body;
     const isAdmin = req.user.role === 'admin';
-    const databaseQuoteService = require('../services/databaseQuoteService');
+    const persistentDataCollection = require('../services/persistentDataCollection');
 
     if (!Array.isArray(requests) || requests.length === 0) {
       return res.status(400).json({
@@ -1880,11 +1917,19 @@ router.post('/quotes/batch', async (req, res) => {
           };
         }
 
-        // ✅ DATABASE-FIRST: Try cache first
-        let quote = await databaseQuoteService.getQuoteFromDatabase(broker.brokerName, symbol);
+        // 🚀 FASTEST: Use persistent data collection (same system as premium calculations)
+        const normalizedBroker = await intelligentNormalizer.normalizeBrokerName(
+          broker.brokerName, broker.server, broker.companyName
+        );
+        
+        let quote = await persistentDataCollection.getQuoteFromBidAskTable(normalizedBroker, symbol);
 
-        // Only call API if cache is stale
-        if (!databaseQuoteService.isQuoteFresh(quote, 5000)) {
+        const cacheAge = quote ? persistentDataCollection.getQuoteAgeMs(quote) : 'N/A';
+        console.log(`⚡ BATCH FASTEST for ${normalizedBroker}/${symbol}: age=${cacheAge}ms`);
+
+        // Only call API if absolutely no data exists (should be extremely rare)
+        if (!quote) {
+          console.log(`🌐 BATCH RARE FALLBACK: No data found for ${normalizedBroker}/${symbol}, fetching from API`);
           try {
             const token = await getValidToken(broker, terminal === 'MT5');
             const client = terminal === 'MT5' ? axiosMT5 : axiosMT4;
@@ -1903,10 +1948,14 @@ router.post('/quotes/batch', async (req, res) => {
                 source: 'api',
                 age: 0
               };
+              console.log(`✅ Batch API quote fetched for ${normalizedBroker}/${symbol}: bid=${quote.bid}, ask=${quote.ask}`);
             }
           } catch (apiError) {
-            // Use stale cache if API fails
+            console.log(`❌ Batch API fallback failed for ${normalizedBroker}/${symbol}`);
+            // No fallback to stale data - either fresh or nothing
           }
+        } else {
+          console.log(`⚡ BATCH PERSISTENT HIT: Ultra-fast quote for ${normalizedBroker}/${symbol}: age=${cacheAge}ms`);
         }
 
         if (!quote) {
@@ -1936,7 +1985,8 @@ router.post('/quotes/batch', async (req, res) => {
           data: {
             ...quote,
             cached: quote.source !== 'api',
-            age: databaseQuoteService.getQuoteAgeMs(quote)
+            age: persistentDataCollection.getQuoteAgeMs(quote),
+            ultraFast: true
           },
           brokerInfo: {
             accountSetName: broker.accountSet?.name,

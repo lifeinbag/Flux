@@ -1,4 +1,8 @@
 // server/services/databaseQuoteService.js
+
+// 🔧 DEBUG CONTROL - Reads from environment variable or defaults to false
+const DEBUG_ENABLED = process.env.DEBUG_ENABLED === 'true';
+
 const { sequelize } = require('../models');
 const intelligentNormalizer = require('../utils/intelligentBrokerNormalizer');
 const logger = require('../utils/logger');
@@ -14,50 +18,101 @@ class DatabaseQuoteService {
    * @param {string} symbol - Symbol to get quote for
    * @returns {Promise<Object|null>} Quote object or null
    */
+  /**
+   * Map symbol variations to match database storage
+   * @param {string} symbol - Original symbol
+   * @param {string} brokerName - Broker name for context
+   * @returns {string[]} - Array of possible symbol variations to try
+   */
+  getSymbolVariations(symbol, brokerName) {
+    const variations = [symbol]; // Always try original first
+    
+    // Common symbol mappings
+    if (symbol.includes('m')) {
+      variations.push(symbol.replace(/m$/, '')); // XAUUSDm → XAUUSD
+    }
+    if (symbol.includes('#')) {
+      variations.push(symbol.replace(/#/g, '')); // GOLD# → GOLD
+    }
+    if (!symbol.includes('USD') && (symbol.includes('XAU') || symbol.includes('GOLD'))) {
+      variations.push('XAUUSD'); // GCZ25 → XAUUSD (gold futures to spot)
+    }
+    
+    return [...new Set(variations)]; // Remove duplicates
+  }
+
   async getQuoteFromDatabase(brokerName, symbol) {
     const startTime = Date.now();
     try {
       const normalizedBroker = await intelligentNormalizer.normalizeBrokerName(brokerName);
       const tableName = `bid_ask_${normalizedBroker}`;
       
-      const [results] = await sequelize.query(`
-        SELECT symbol, bid, ask, timestamp 
-        FROM "${tableName}" 
-        WHERE symbol = :symbol 
-        ORDER BY timestamp DESC 
-        LIMIT 1
+      // 🔍 DEBUG: Check if table exists first
+      if (DEBUG_ENABLED) console.log(`🔍 DATABASE DEBUG: Looking for table "${tableName}" with symbol "${symbol}"`);
+      
+      // Check table existence
+      const [tableExists] = await sequelize.query(`
+        SELECT EXISTS (
+          SELECT FROM information_schema.tables 
+          WHERE table_name = :tableName
+        );
       `, {
-        replacements: { symbol },
+        replacements: { tableName },
         type: sequelize.QueryTypes.SELECT
       });
-
-      const queryTime = Date.now() - startTime;
-
-      if (results && results.length > 0) {
-        const quote = results[0];
-        const age = this.getQuoteAgeMs({ timestamp: quote.timestamp });
-        const isStale = age > this.maxCacheAgeMs;
+      
+      if (!tableExists.exists) {
+        if (DEBUG_ENABLED) console.log(`❌ Table "${tableName}" does not exist!`);
+        return null;
+      }
+      
+      if (DEBUG_ENABLED) console.log(`✅ Table "${tableName}" exists, trying symbol variations...`);
+      
+      // Try multiple symbol variations
+      const symbolVariations = this.getSymbolVariations(symbol, normalizedBroker);
+      if (DEBUG_ENABLED) console.log(`🔍 Trying symbol variations: ${symbolVariations.join(', ')}`);
+      
+      for (const symbolVariation of symbolVariations) {
+        if (DEBUG_ENABLED) console.log(`🔍 Executing SQL: SELECT * FROM "${tableName}" WHERE symbol = '${symbolVariation}' LIMIT 1`);
         
-        // Enhanced logging for cache monitoring
-        if (isStale) {
-          logger.warn(`🔄 Cache stale for ${brokerName}/${symbol}: ${Math.round(age/1000)}s old`);
+        const results = await sequelize.query(`
+          SELECT symbol, bid, ask, timestamp 
+          FROM "${tableName}" 
+          WHERE symbol = :symbol 
+          ORDER BY timestamp DESC 
+          LIMIT 1
+        `, {
+          replacements: { symbol: symbolVariation },
+          type: sequelize.QueryTypes.SELECT
+        });
+        
+        if (DEBUG_ENABLED) console.log(`🔍 Query result for ${symbolVariation}:`, results ? `${results.length} rows` : 'null');
+        
+        if (results && results.length > 0) {
+          if (DEBUG_ENABLED) console.log(`✅ Found quote using symbol variation: "${symbolVariation}" (original: "${symbol}")`);
+          const quote = results[0];
+          const age = this.getQuoteAgeMs({ timestamp: quote.timestamp });
+          const isStale = age > this.maxCacheAgeMs;
+          
+          return {
+            bid: parseFloat(quote.bid),
+            ask: parseFloat(quote.ask),
+            symbol: quote.symbol,
+            originalSymbol: symbol, // Keep track of original symbol requested
+            timestamp: quote.timestamp,
+            source: 'database',
+            broker: brokerName,
+            age: age,
+            isStale: isStale,
+            queryTime: Date.now() - startTime
+          };
         } else {
-          logger.debug(`✅ Cache hit for ${brokerName}/${symbol}: ${Math.round(age/1000)}s old`);
+          if (DEBUG_ENABLED) console.log(`⚠️ No quote found for variation: "${symbolVariation}"`);
         }
-        
-        return {
-          bid: parseFloat(quote.bid),
-          ask: parseFloat(quote.ask),
-          symbol: quote.symbol,
-          timestamp: quote.timestamp,
-          source: 'database',
-          broker: brokerName,
-          age: age,
-          isStale: isStale,
-          queryTime: queryTime
-        };
       }
 
+      // If no variations worked, log and return null
+      if (DEBUG_ENABLED) console.log(`📭 No quote found for any symbol variation: ${symbolVariations.join(', ')}`);
       logger.warn(`📭 No quote found in database for ${brokerName}/${symbol}`);
       return null;
     } catch (error) {
@@ -233,7 +288,7 @@ class DatabaseQuoteService {
    */
   setMaxCacheAge(ageMs) {
     this.maxCacheAgeMs = ageMs;
-    logger.info(`📝 DatabaseQuoteService max age updated to ${ageMs}ms`);
+    if (DEBUG_ENABLED) logger.info(`📝 DatabaseQuoteService max age updated to ${ageMs}ms`);
   }
 }
 

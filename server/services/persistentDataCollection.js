@@ -9,6 +9,9 @@ const intelligentNormalizer = require('../utils/intelligentBrokerNormalizer');
 const simpleStatusLogger = require('../utils/simpleStatusLogger');
 const brokerStatusLogger = require('../utils/brokerStatusLogger');
 
+// 🔧 DEBUG CONTROL - Reads from environment variable or defaults to false
+const DEBUG_ENABLED = process.env.DEBUG_ENABLED === 'true';
+
 const mt4Client = axios.create({
   baseURL: process.env.MT4_API_URL,
   timeout: 10_000,
@@ -94,13 +97,14 @@ class PersistentDataCollectionService {
       return;
     }
 
+    // 🚀 ULTRA-FAST: Optimize collection interval for fastest data
     const interval = setInterval(async () => {
       try {
         await this.collectAndStorePremiumData(config);
       } catch (error) {
         logger.error(`Error in data collection for ${collectionKey}:`, error.message);
       }
-    }, 1000);
+    }, 500); // 🚀 500ms for ultra-fast updates (2x faster than before)
 
     this.activeCollections.set(collectionKey, {
       interval,
@@ -122,25 +126,27 @@ class PersistentDataCollectionService {
       let futureQuote = await this.getQuoteFromBidAskTable(company1, futureSymbol);
       let spotQuote = await this.getQuoteFromBidAskTable(company2, spotSymbol);
 
-      // Only fetch from API if database cache is stale (> 5 seconds)
-      if (!this.isQuoteFresh(futureQuote, 5000)) {
-        logger.info(`🌐 Fetching fresh future quote for ${company1}/${futureSymbol} - cache stale`);
+      // 🚀 ULTRA-FAST: Only fetch from API if database cache is stale (> 2 seconds for ultra-fast data)  
+      if (!this.isQuoteFresh(futureQuote, 2000)) {
+        const cacheAge = futureQuote ? this.getQuoteAgeMs(futureQuote) : 'N/A';
+        if (DEBUG_ENABLED) logger.info(`🌐 API FALLBACK: Fetching fresh future quote for ${company1}/${futureSymbol} - cache age: ${cacheAge}ms`);
         futureQuote = await this.fetchQuoteWithRetry(accountSetId, futureSymbol, 1);
         if (futureQuote) {
           await this.storeBidAskData(company1, futureSymbol, futureQuote, futureQuote.token, futureQuote.terminal);
         }
       } else {
-        logger.info(`💾 Using cached future quote for ${company1}/${futureSymbol} - age: ${this.getQuoteAgeMs(futureQuote)}ms`);
+        if (DEBUG_ENABLED) logger.info(`💾 DATABASE HIT: Using cached future quote for ${company1}/${futureSymbol} - age: ${this.getQuoteAgeMs(futureQuote)}ms`);
       }
 
-      if (!this.isQuoteFresh(spotQuote, 5000)) {
-        logger.info(`🌐 Fetching fresh spot quote for ${company2}/${spotSymbol} - cache stale`);
+      if (!this.isQuoteFresh(spotQuote, 2000)) {
+        const cacheAge = spotQuote ? this.getQuoteAgeMs(spotQuote) : 'N/A';
+        if (DEBUG_ENABLED) logger.info(`🌐 API FALLBACK: Fetching fresh spot quote for ${company2}/${spotSymbol} - cache age: ${cacheAge}ms`);
         spotQuote = await this.fetchQuoteWithRetry(accountSetId, spotSymbol, 2);
         if (spotQuote) {
           await this.storeBidAskData(company2, spotSymbol, spotQuote, spotQuote.token, spotQuote.terminal);
         }
       } else {
-        logger.info(`💾 Using cached spot quote for ${company2}/${spotSymbol} - age: ${this.getQuoteAgeMs(spotQuote)}ms`);
+        if (DEBUG_ENABLED) logger.info(`💾 DATABASE HIT: Using cached spot quote for ${company2}/${spotSymbol} - age: ${this.getQuoteAgeMs(spotQuote)}ms`);
       }
 
       if (!futureQuote || !spotQuote) {
@@ -175,7 +181,7 @@ class PersistentDataCollectionService {
         this.activeCollections.get(key).lastUpdate = new Date();
       }
 
-      logger.info(`📊 Premium calculated: buy=${buyPremium.toFixed(5)}, sell=${sellPremium.toFixed(5)} (${futureQuote.source || 'cache'}/${spotQuote.source || 'cache'})`);
+      if (DEBUG_ENABLED) logger.info(`📊 Premium calculated: buy=${buyPremium.toFixed(5)}, sell=${sellPremium.toFixed(5)} (${futureQuote.source || 'cache'}/${spotQuote.source || 'cache'})`);
 
     } catch (error) {
       logger.error('Error collecting premium data:', error.message);
@@ -264,7 +270,7 @@ class PersistentDataCollectionService {
       return broker.token;
     }
 
-    console.log(`🔄 Fetching new token for ${broker.terminal} ${broker.accountNumber}...`);
+    if (DEBUG_ENABLED) console.log(`🔄 Fetching new token for ${broker.terminal} ${broker.accountNumber}...`);
 
     try {
       // Clear expired token
@@ -287,7 +293,7 @@ class PersistentDataCollectionService {
       broker.tokenExpiresAt = new Date(Date.now() + 22 * 60 * 60 * 1000);
       await broker.save();
 
-      console.log(`✅ New token saved for ${broker.terminal} ${broker.accountNumber}`);
+      if (DEBUG_ENABLED) console.log(`✅ New token saved for ${broker.terminal} ${broker.accountNumber}`);
       return token;
 
     } catch (error) {
@@ -315,42 +321,57 @@ class PersistentDataCollectionService {
     return null;
   }
 
-  // ✅ NEW: Get quote from database bid/ask table
+  // 🚀 ULTRA-FAST: Get quote from database bid/ask table with maximum optimization
   async getQuoteFromBidAskTable(brokerName, symbol) {
+    const startTime = process.hrtime.bigint();
     try {
       const tableName = `bid_ask_${brokerName}`;
       
-      const [result] = await sequelize.query(`
+      // 🚀 OPTIMIZED: Single query with minimal data transfer
+      const results = await sequelize.query(`
         SELECT symbol, bid, ask, timestamp 
         FROM "${tableName}" 
-        WHERE symbol = :symbol 
+        WHERE symbol = $1 
         ORDER BY timestamp DESC 
         LIMIT 1
       `, {
-        replacements: { symbol },
-        type: sequelize.QueryTypes.SELECT
+        bind: [symbol],
+        type: sequelize.QueryTypes.SELECT,
+        raw: true,
+        plain: false
       });
 
-      if (result && result.length > 0) {
-        const quote = result[0];
+      if (results && results.length > 0) {
+        const quote = results[0];
+        const endTime = process.hrtime.bigint();
+        const duration = Number(endTime - startTime) / 1_000_000; // Convert to milliseconds
+        
+        if (DEBUG_ENABLED) console.log(`⚡ ULTRA-FAST DB HIT: ${brokerName}/${symbol} in ${duration.toFixed(2)}ms`);
+        
         return {
           bid: parseFloat(quote.bid),
           ask: parseFloat(quote.ask),
           symbol: quote.symbol,
           timestamp: quote.timestamp,
-          source: 'database'
+          source: 'persistent_collection',
+          queryTime: duration
         };
       }
 
+      const endTime = process.hrtime.bigint();
+      const duration = Number(endTime - startTime) / 1_000_000;
+      if (DEBUG_ENABLED) console.log(`📭 No data found: ${brokerName}/${symbol} in ${duration.toFixed(2)}ms`);
       return null;
     } catch (error) {
-      logger.error(`❌ Database quote lookup failed for ${brokerName}/${symbol}:`, error.message);
+      const endTime = process.hrtime.bigint();
+      const duration = Number(endTime - startTime) / 1_000_000;
+      logger.error(`❌ Database quote lookup failed for ${brokerName}/${symbol} in ${duration.toFixed(2)}ms:`, error.message);
       return null;
     }
   }
 
-  // ✅ NEW: Check if quote is fresh (within specified age)
-  isQuoteFresh(quote, maxAgeMs = 5000) {
+  // 🚀 ULTRA-FAST: Check if quote is fresh (within specified age) - default 2 seconds for ultra-fast data
+  isQuoteFresh(quote, maxAgeMs = 2000) {
     if (!quote || !quote.timestamp) {
       return false;
     }

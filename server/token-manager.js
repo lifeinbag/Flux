@@ -107,38 +107,9 @@ const TokenManager = {
     return `${isMT5 ? 'MT5' : 'MT4'}|${serverName}|${account}|${brokerId || 'default'}|pos${position}`;
   },
 
-  // ✅ FIXED: Enhanced API health check with better timeout
-  async _checkApiHealth(client) {
-    try {
-      // Primary: Try ConnectEx first
-      const response = await client.get('/ConnectEx', {
-        params: { 
-          user: process.env.MT4_TEST_USER || 'test_user', 
-          password: process.env.MT4_TEST_PASSWORD || 'test_pass', 
-          server: process.env.MT4_TEST_SERVER || 'test_server' 
-        },
-        timeout: 8000 // ✅ FIXED: Reduced timeout for health check
-      });
-      return true; // Any response means API is reachable
-    } catch (error) {
-      // Fallback: Try original Connect endpoint
-      try {
-        const response = await client.get('/Connect', {
-          params: { 
-            user: process.env.MT4_TEST_USER || 'test_user', 
-            password: process.env.MT4_TEST_PASSWORD || 'test_pass', 
-            host: process.env.MT4_TEST_SERVER || 'test_server' 
-          },
-          timeout: 8000
-        });
-        return true;
-      } catch (fallbackError) {
-        if (error.response || fallbackError.response) return true; // Got response, API is up
-        console.log(`API health check failed: ${error.message}`);
-        return false; // Network/timeout error
-      }
-    }
-  },
+  // ✅ REMOVED: Unnecessary API health check
+  // Health status is now tracked through actual operational success/failures
+  // via brokerStatusLogger.logSuccess() calls during real token operations
 
   async getToken(isMT5, serverName, account, password, brokerId = null, position = 1) {
     if (!serverName || !account || !password) {
@@ -187,13 +158,9 @@ const TokenManager = {
       }
     }
 
-    // ✅ FIXED: API health check before token fetch
+    // ✅ REMOVED: Unnecessary API health check before token fetch
+    // Real API health is determined during actual token connection attempts
     const client = this._getClient(isMT5);
-    console.log(`Checking ${isMT5 ? 'MT5' : 'MT4'} API health...`);
-    const apiHealthy = await this._checkApiHealth(client);
-    if (!apiHealthy) {
-      throw new TokenError(`${isMT5 ? 'MT5' : 'MT4'} API service is unavailable or responding slowly`);
-    }
 
     // Fetch new token under lock
     const release = await this.lock.acquire(key);

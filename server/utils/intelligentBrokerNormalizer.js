@@ -1,5 +1,8 @@
 // server/utils/intelligentBrokerNormalizer.js
 
+// 🔧 DEBUG CONTROL - Reads from environment variable or defaults to false
+const DEBUG_ENABLED = process.env.DEBUG_ENABLED === 'true';
+
 const sequelize = require('../config/database');
 const logger = require('./logger');
 
@@ -41,7 +44,7 @@ class IntelligentBrokerNormalizer {
       // Load existing mappings into cache
       await this.loadKnownMappings();
       
-      logger.info('✅ Intelligent broker normalizer initialized');
+      if (DEBUG_ENABLED) logger.info('✅ Intelligent broker normalizer initialized');
     } catch (err) {
       logger.error('Failed to initialize broker mappings table', err.message);
     }
@@ -68,7 +71,7 @@ class IntelligentBrokerNormalizer {
         });
       });
 
-      logger.info(`📚 Loaded ${results.length} known broker mappings into cache`);
+      if (DEBUG_ENABLED) logger.info(`📚 Loaded ${results.length} known broker mappings into cache`);
     } catch (err) {
       logger.error('Failed to load known broker mappings', err.message);
     }
@@ -88,7 +91,7 @@ class IntelligentBrokerNormalizer {
     // 1. Check cache first (fastest)
     if (this.knownBrokers.has(cleanInput)) {
       const cached = this.knownBrokers.get(cleanInput);
-      logger.info(`🎯 Found cached mapping: "${userInput}" → "${cached.normalized}" (confidence: ${cached.confidence})`);
+      if (DEBUG_ENABLED) logger.info(`🎯 Found cached mapping: "${userInput}" → "${cached.normalized}" (confidence: ${cached.confidence})`);
       await this.incrementUsageCount(cleanInput);
       return cached.normalized;
     }
@@ -112,7 +115,7 @@ class IntelligentBrokerNormalizer {
     if (serverName) {
       const serverDetection = this.detectFromServer(serverName);
       if (serverDetection.confidence > 0.8) {
-        logger.info(`🔍 Detected from server "${serverName}": ${serverDetection.normalized}`);
+        if (DEBUG_ENABLED) logger.info(`🔍 Detected from server "${serverName}": ${serverDetection.normalized}`);
         return serverDetection;
       }
     }
@@ -121,7 +124,7 @@ class IntelligentBrokerNormalizer {
     if (companyName) {
       const companyDetection = this.detectFromCompany(companyName);
       if (companyDetection.confidence > 0.7) {
-        logger.info(`🏢 Detected from company "${companyName}": ${companyDetection.normalized}`);
+        if (DEBUG_ENABLED) logger.info(`🏢 Detected from company "${companyName}": ${companyDetection.normalized}`);
         return companyDetection;
       }
     }
@@ -129,14 +132,14 @@ class IntelligentBrokerNormalizer {
     // Method 3: Fuzzy matching with existing patterns
     const fuzzyMatch = await this.fuzzyMatchExisting(cleanInput);
     if (fuzzyMatch.confidence > 0.6) {
-      logger.info(`🔄 Fuzzy matched "${userInput}": ${fuzzyMatch.normalized}`);
+      if (DEBUG_ENABLED) logger.info(`🔄 Fuzzy matched "${userInput}": ${fuzzyMatch.normalized}`);
       return fuzzyMatch;
     }
 
     // Method 4: Pattern-based extraction
     const patternDetection = this.detectFromPatterns(cleanInput);
     if (patternDetection.confidence > 0.5) {
-      logger.info(`📋 Pattern detected "${userInput}": ${patternDetection.normalized}`);
+      if (DEBUG_ENABLED) logger.info(`📋 Pattern detected "${userInput}": ${patternDetection.normalized}`);
       return patternDetection;
     }
 
@@ -345,7 +348,7 @@ class IntelligentBrokerNormalizer {
         companyName: companyName
       });
 
-      logger.info(`💾 Saved broker mapping: "${userInput}" → "${normalizedName}" (confidence: ${confidence})`);
+      if (DEBUG_ENABLED) logger.info(`💾 Saved broker mapping: "${userInput}" → "${normalizedName}" (confidence: ${confidence})`);
     } catch (err) {
       logger.error('Failed to save broker mapping', err.message);
     }
@@ -405,7 +408,7 @@ class IntelligentBrokerNormalizer {
         RETURNING id
       `);
 
-      logger.info(`🧹 Cleaned up ${deleted.length} low-quality broker mappings`);
+      if (DEBUG_ENABLED) logger.info(`🧹 Cleaned up ${deleted.length} low-quality broker mappings`);
       await this.loadKnownMappings(); // Reload cache
     } catch (err) {
       logger.error('Failed to cleanup broker mappings', err.message);
@@ -417,7 +420,7 @@ class IntelligentBrokerNormalizer {
    */
   async addManualMapping(userInput, normalizedName, confidence = 1.0) {
     await this.saveBrokerMapping(userInput, normalizedName, confidence, null, null);
-    logger.info(`➕ Manually added mapping: "${userInput}" → "${normalizedName}"`);
+    if (DEBUG_ENABLED) logger.info(`➕ Manually added mapping: "${userInput}" → "${normalizedName}")`);
   }
 }
 
