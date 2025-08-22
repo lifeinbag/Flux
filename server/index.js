@@ -21,7 +21,6 @@ const databaseCleanupService = require('./services/databaseCleanupService');
 const apiErrorMonitor = require('./services/apiErrorMonitor');
 const brokerStatusLogger = require('./utils/brokerStatusLogger');
 const logLevelController = require('./utils/logLevelController');
-const simpleStatusLogger = require('./utils/simpleStatusLogger');
 
 
 
@@ -416,7 +415,14 @@ async function getValidBrokerToken(broker, forceRefresh = false) {
                     new Date(broker.tokenExpiresAt).getTime() > now;
   
   if (tokenValid && !forceRefresh) {
-    simpleStatusLogger.updateBrokerStatus(broker.server, broker.accountNumber, broker.terminal, 'token', 'success');
+    // Log successful token use (cached)
+    brokerStatusLogger.logSuccess(
+      'Unknown', // Account set name not available in this context
+      broker.server,
+      broker.accountNumber,
+      broker.terminal,
+      'token'
+    );
     return broker.token;
   }
   
@@ -445,7 +451,14 @@ async function getValidBrokerToken(broker, forceRefresh = false) {
   broker.tokenExpiresAt = new Date(Date.now() + 22 * 60 * 60 * 1000);
   await broker.save();
   
-  simpleStatusLogger.updateBrokerStatus(broker.server, broker.accountNumber, broker.terminal, 'token', 'success');
+  // Log successful token refresh
+  brokerStatusLogger.logSuccess(
+    'Unknown', // Account set name not available in this context
+    broker.server,
+    broker.accountNumber,
+    broker.terminal,
+    'token'
+  );
   return token;
 }
 
@@ -900,6 +913,15 @@ async function handleSubscribeQuote(ws, msg) {
                 source: 'api',
                 timestamp: new Date()
               };
+              
+              // Log successful WebSocket quote fetch
+              brokerStatusLogger.logSuccess(
+                futureBrokerInfo.accountSetName,
+                futureBrokerInfo.brokerName,
+                futureBrokerInfo.accountNumber,
+                futureBroker.terminal,
+                'quote'
+              );
             }
           } catch (apiErr) {
             // 🚨 CRITICAL FIX: Handle token refresh for WebSocket quote fetching
@@ -915,6 +937,15 @@ async function handleSubscribeQuote(ws, msg) {
                     timestamp: new Date()
                   };
                   console.log('✅ Future quote retry successful after token refresh');
+                  
+                  // Log successful WebSocket quote retry
+                  brokerStatusLogger.logSuccess(
+                    futureBrokerInfo.accountSetName,
+                    futureBrokerInfo.brokerName,
+                    futureBrokerInfo.accountNumber,
+                    futureBroker.terminal,
+                    'quote'
+                  );
                 } else {
                   console.log('⚠️ Future quote retry failed, using stale cache');
                 }
@@ -940,6 +971,15 @@ async function handleSubscribeQuote(ws, msg) {
                 source: 'api',
                 timestamp: new Date()
               };
+              
+              // Log successful WebSocket spot quote fetch
+              brokerStatusLogger.logSuccess(
+                spotBrokerInfo.accountSetName,
+                spotBrokerInfo.brokerName,
+                spotBrokerInfo.accountNumber,
+                spotBroker.terminal,
+                'quote'
+              );
             }
           } catch (apiErr) {
             // 🚨 CRITICAL FIX: Handle token refresh for WebSocket spot quote fetching
@@ -955,6 +995,15 @@ async function handleSubscribeQuote(ws, msg) {
                     timestamp: new Date()
                   };
                   console.log('✅ Spot quote retry successful after token refresh');
+                  
+                  // Log successful WebSocket spot quote retry
+                  brokerStatusLogger.logSuccess(
+                    spotBrokerInfo.accountSetName,
+                    spotBrokerInfo.brokerName,
+                    spotBrokerInfo.accountNumber,
+                    spotBroker.terminal,
+                    'quote'
+                  );
                 } else {
                   console.log('⚠️ Spot quote retry failed, using stale cache');
                 }

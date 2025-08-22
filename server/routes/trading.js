@@ -1919,6 +1919,15 @@ router.post('/quotes/batch', async (req, res) => {
           };
         }
 
+        // ✅ Log successful quote fetch to broker status
+        brokerStatusLogger.logSuccess(
+          broker.accountSet?.name || 'Unknown',
+          broker.brokerName,
+          broker.accountNumber,
+          broker.terminal,
+          'quote'
+        );
+
         return {
           symbol,
           terminal,
@@ -1928,6 +1937,12 @@ router.post('/quotes/batch', async (req, res) => {
             ...quote,
             cached: quote.source !== 'api',
             age: databaseQuoteService.getQuoteAgeMs(quote)
+          },
+          brokerInfo: {
+            accountSetName: broker.accountSet?.name,
+            brokerName: broker.brokerName,
+            accountNumber: broker.accountNumber,
+            terminal: broker.terminal
           }
         };
 
