@@ -7,6 +7,7 @@ const https = require('https');
 const axios = require('axios');
 const intelligentNormalizer = require('../utils/intelligentBrokerNormalizer');
 const simpleStatusLogger = require('../utils/simpleStatusLogger');
+const brokerStatusLogger = require('../utils/brokerStatusLogger');
 
 const mt4Client = axios.create({
   baseURL: process.env.MT4_API_URL,
@@ -208,6 +209,15 @@ class PersistentDataCollectionService {
       if (quote) {
         quote.token = token;
         quote.terminal = broker.terminal;
+        
+        // Log successful quote fetch to broker status
+        brokerStatusLogger.logSuccess(
+          accountSet.name,
+          broker.brokerName,
+          broker.accountNumber,
+          broker.terminal,
+          'quote'
+        );
       }
       
       return quote;

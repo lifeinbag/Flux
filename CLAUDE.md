@@ -263,6 +263,52 @@ const quotes = await API.post('/trading/quotes/batch', { requests });
 
 ---
 
+## 🚨 CRITICAL: ANALYSIS-FIRST APPROACH
+
+### Before Adding ANY New Feature or Service:
+
+**STEP 1: UNDERSTAND EXISTING SYSTEMS**
+1. **Read CLAUDE.md thoroughly** - Look for similar patterns
+2. **Search codebase** for existing implementations
+3. **Ask: "What system already does this?"**
+4. **Check persistent services** - `persistentDataCollection.js`, monitoring services
+5. **Look for existing data flows** - Database queries, API calls, caches
+
+**STEP 2: IDENTIFY EXISTING DATA FLOWS**
+- **Quote/Price Data** → `persistentDataCollection.js` + database-first pattern
+- **Broker Status** → Log existing operations, DON'T create new API calls
+- **Real-time Data** → WebSocket + database hybrid
+- **Monitoring** → Enhance existing services, DON'T duplicate
+
+**STEP 3: ENHANCE, DON'T DUPLICATE**
+- ✅ **ADD logging** to existing successful operations
+- ✅ **EXTEND current services** with additional features
+- ✅ **USE database-first** approach for all data
+- ❌ **DON'T create new external API calls** when data already flows
+- ❌ **DON'T build parallel systems** that do the same thing
+
+### Example: Broker Status Monitoring
+**❌ WRONG APPROACH:**
+- Create new health monitor service
+- Make additional external API calls
+- Build separate monitoring system
+
+**✅ CORRECT APPROACH:**
+- Add logging to existing `persistentDataCollection.js`
+- Log successful operations in existing API endpoints
+- Use current token/data flows
+
+### Analysis Questions to Ask:
+1. **Does this data already exist** in the database?
+2. **Is there already a service** doing similar work?
+3. **Are we already making** these API calls somewhere?
+4. **Can we enhance existing** code instead of creating new?
+5. **What would be the simplest** way to achieve this?
+
+---
+
 **Remember: Always check existing optimized systems before implementing new solutions!**
+
+**NEVER create new services without first analyzing existing data flows and systems.**
 
 *This file should be updated whenever new optimized systems are implemented.*

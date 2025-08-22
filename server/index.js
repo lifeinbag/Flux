@@ -1579,6 +1579,7 @@ syncDatabase()
       brokerStatusLogger.start();
     }, 2000);
 
+
     
     // Start cleanup scheduler
     const cleanupInterval = parseInt(process.env.CLEANUP_INTERVAL_HOURS) || 24;

@@ -13,6 +13,7 @@ const { sequelize, ActiveTrade, ClosedTrade, PendingOrder } = require('../models
 const latencyMonitor = require('../services/latencyMonitor');
 const tradingService = require('../services/tradingService');
 const realtimeTpMonitor = require('../services/realtimeTpMonitor');
+const brokerStatusLogger = require('../utils/brokerStatusLogger');
 
 // Helper to unify incoming param name
 function extractBrokerId(req) {
@@ -182,6 +183,17 @@ router.get('/quote', async (req, res) => {
     
     // Record quote ping latency
     latencyMonitor.addLatencyRecord(brokerId, 'quotePing', latency);
+    
+    // Log successful quote fetch to broker status
+    if (quote) {
+      brokerStatusLogger.logSuccess(
+        broker.accountSet?.name || 'Unknown',
+        broker.brokerName,
+        broker.accountNumber,
+        broker.terminal,
+        'quote'
+      );
+    }
     
     return res.json({ 
       success: true, 
@@ -393,6 +405,15 @@ router.get('/balance', async (req, res) => {
       params: { id: mtToken } 
     });
 
+    // Log successful balance fetch to broker status
+    brokerStatusLogger.logSuccess(
+      broker.accountSet?.name || 'Unknown',
+      broker.brokerName,
+      broker.accountNumber,
+      broker.terminal,
+      'balance'
+    );
+
     return res.json({ success: true, balance });
   } catch (err) {
     if (err instanceof TokenError) {
@@ -436,6 +457,15 @@ router.get('/positions', async (req, res) => {
         params: { id: mtToken } 
       });
       positions = resp.data;
+      
+      // Log successful orders fetch to broker status
+      brokerStatusLogger.logSuccess(
+        broker.accountSet?.name || 'Unknown',
+        broker.brokerName,
+        broker.accountNumber,
+        broker.terminal,
+        'orders'
+      );
     } catch (err) {
       if (err.response?.status === 404) positions = [];
       else throw err;
