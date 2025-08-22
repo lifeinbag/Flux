@@ -16,6 +16,8 @@ export default function ActiveTrades() {
   const [savingTP, setSavingTP] = useState(new Set());
   const [editingTPMode, setEditingTPMode] = useState({});
   const [tpModes, setTpModes] = useState({});
+  const [showClosedTrades, setShowClosedTrades] = useState(false);
+  const [closedTrades, setClosedTrades] = useState([]);
   
   // Premium spread state (same as Dashboard and TradeExecution)
   const [futureQuote, setFutureQuote] = useState(null);
@@ -24,6 +26,17 @@ export default function ActiveTrades() {
   const [sellPremium, setSellPremium] = useState(0);
 
   const money = v => `$${(Number(v) || 0).toFixed(2)}`;
+
+  const loadClosedTrades = async () => {
+    try {
+      const res = await API.get(`/trading/closed-trades?accountSetId=${selectedSetId}`);
+      if (res.data.success) {
+        setClosedTrades(res.data.trades || []);
+      }
+    } catch (error) {
+      console.error('Failed to load closed trades:', error);
+    }
+  };
 
   useEffect(() => {
     loadAccountSets();
@@ -42,7 +55,7 @@ export default function ActiveTrades() {
       // Initialize MT4/MT5 service for this account set
       mt4mt5Service.initializeAccountSet(selectedSetId);
       
-      // Subscribe to premium and positions updates for this account set
+      // Subscribe to premium updates for this account set
       const accountSet = accountSets.find(set => (set._id || set.id) === selectedSetId);
       if (accountSet) {
         // Add a small delay to ensure cleanup is complete
@@ -50,13 +63,18 @@ export default function ActiveTrades() {
           if (accountSet.futureSymbol && accountSet.spotSymbol) {
             subscribeToPremium(selectedSetId, accountSet.futureSymbol, accountSet.spotSymbol);
           }
-          subscribeToPositions(selectedSetId);
+          // ✅ CONDITIONAL: Only subscribe to positions if there are active FluxNetwork trades
+          setTimeout(() => {
+            if (activeTrades.length > 0) {
+              console.log('📡 ActiveTrades: Subscribing to positions - has active trades:', activeTrades.length);
+              subscribeToPositions(selectedSetId);
+              subscribeToOpenOrders(selectedSetId);
+            } else {
+              console.log('⏭️ ActiveTrades: Skipping position subscription - no active FluxNetwork trades');
+            }
+          }, 500); // Wait for activeTrades to load
         }, 100);
       }
-      
-      // Subscribe to real-time updates via WebSocket
-      console.log('📡 ActiveTrades: Subscribing to open orders for:', selectedSetId);
-      subscribeToOpenOrders(selectedSetId);
       
       // Clear premium data when account set changes
       setFutureQuote(null);
@@ -65,6 +83,15 @@ export default function ActiveTrades() {
       setSellPremium(0);
     }
   }, [selectedSetId, accountSets]);
+
+  // ✅ NEW: Subscribe to positions when activeTrades changes
+  useEffect(() => {
+    if (selectedSetId && activeTrades.length > 0) {
+      console.log('📡 ActiveTrades: Active trades detected, subscribing to positions:', activeTrades.length);
+      subscribeToPositions(selectedSetId);
+      subscribeToOpenOrders(selectedSetId);
+    }
+  }, [activeTrades.length, selectedSetId]);
 
   useEffect(() => {
     // Set up WebSocket listeners for real-time updates

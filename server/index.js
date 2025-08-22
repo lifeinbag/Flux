@@ -19,6 +19,9 @@ const tradeStatusMonitor = require('./services/tradeStatusMonitor');
 const realtimeTpMonitor = require('./services/realtimeTpMonitor');
 const databaseCleanupService = require('./services/databaseCleanupService');
 const apiErrorMonitor = require('./services/apiErrorMonitor');
+const brokerStatusLogger = require('./utils/brokerStatusLogger');
+const logLevelController = require('./utils/logLevelController');
+const simpleStatusLogger = require('./utils/simpleStatusLogger');
 
 
 
@@ -413,6 +416,7 @@ async function getValidBrokerToken(broker, forceRefresh = false) {
                     new Date(broker.tokenExpiresAt).getTime() > now;
   
   if (tokenValid && !forceRefresh) {
+    simpleStatusLogger.updateBrokerStatus(broker.server, broker.accountNumber, broker.terminal, 'token', 'success');
     return broker.token;
   }
   
@@ -441,11 +445,12 @@ async function getValidBrokerToken(broker, forceRefresh = false) {
   broker.tokenExpiresAt = new Date(Date.now() + 22 * 60 * 60 * 1000);
   await broker.save();
   
+  simpleStatusLogger.updateBrokerStatus(broker.server, broker.accountNumber, broker.terminal, 'token', 'success');
   return token;
 }
 
 // Helper: Fetch quote from MT4/MT5 with latency monitoring
-async function fetchQuote(token, symbol, terminal, brokerId = null) {
+async function fetchQuote(token, symbol, terminal, brokerId = null, brokerInfo = null) {
   const startTime = Date.now();
   
   try {
@@ -465,6 +470,17 @@ async function fetchQuote(token, symbol, terminal, brokerId = null) {
     }
 
     if (response && response.bid && response.ask) {
+      // Log successful quote fetch to status logger
+      if (brokerInfo) {
+        brokerStatusLogger.logSuccess(
+          brokerInfo.accountSetName || 'Unknown',
+          brokerInfo.brokerName || brokerInfo.server,
+          brokerInfo.accountNumber,
+          terminal,
+          'quote'
+        );
+      }
+
       return {
         bid: parseFloat(response.bid),
         ask: parseFloat(response.ask),
@@ -483,6 +499,19 @@ async function fetchQuote(token, symbol, terminal, brokerId = null) {
       latencyMonitor.addLatencyRecord(brokerId, 'quotePing', latency);
     }
     
+    // Log error to status logger
+    if (brokerInfo) {
+      const errorMsg = error.response?.data?.toString() || error.message;
+      brokerStatusLogger.logCriticalError(
+        brokerInfo.accountSetName || 'Unknown',
+        brokerInfo.brokerName || brokerInfo.server,
+        brokerInfo.accountNumber,
+        terminal,
+        'Quote',
+        errorMsg
+      );
+    }
+    
     // Check if error is related to invalid token
     if (error.response && error.response.status === 400 && error.response.data) {
       const errorMsg = error.response.data.toString();
@@ -493,7 +522,19 @@ async function fetchQuote(token, symbol, terminal, brokerId = null) {
           errorMsg.includes('expired') ||
           errorMsg.includes('authorization failed') ||
           errorMsg.includes('login failed')) {
-        console.log(`🔄 Token invalid detected: ${errorMsg}`);
+        
+        // Log token error specifically
+        if (brokerInfo) {
+          brokerStatusLogger.logCriticalError(
+            brokerInfo.accountSetName || 'Unknown',
+            brokerInfo.brokerName || brokerInfo.server,
+            brokerInfo.accountNumber,
+            terminal,
+            'Token',
+            errorMsg
+          );
+        }
+        
         throw new Error('TOKEN_INVALID');
       }
     }
@@ -501,9 +542,20 @@ async function fetchQuote(token, symbol, terminal, brokerId = null) {
   }
 }
 
-async function fetchBalanceAndPositions(broker) {
+async function fetchBalanceAndPositions(broker, brokerInfo = null) {
   if (circuitBreaker.isOpen(broker.id)) {
-    throw new Error(`Circuit breaker open for broker ${broker.id}`);
+    const errorMsg = `Circuit breaker open for broker ${broker.id}`;
+    if (brokerInfo) {
+      brokerStatusLogger.logCriticalError(
+        brokerInfo.accountSetName || 'Unknown',
+        brokerInfo.brokerName || broker.server,
+        broker.accountNumber,
+        broker.terminal,
+        'Balance',
+        errorMsg
+      );
+    }
+    throw new Error(errorMsg);
   }
   
   try {
@@ -514,6 +566,17 @@ async function fetchBalanceAndPositions(broker) {
     });
     
     circuitBreaker.recordSuccess(broker.id);
+
+    // Log successful balance fetch
+    if (brokerInfo) {
+      brokerStatusLogger.logSuccess(
+        brokerInfo.accountSetName || 'Unknown',
+        brokerInfo.brokerName || broker.server,
+        broker.accountNumber,
+        broker.terminal,
+        'balance'
+      );
+    }
 
     return {
       balance: balanceRes,
@@ -799,7 +862,27 @@ async function handleSubscribeQuote(ws, msg) {
     // ✅ DATABASE-FIRST: Send quotes using cached data with API fallback
     const sendQuotes = async () => {
       try {
-        console.log('📡 Sending quotes for:', { futureSymbol, spotSymbol });
+        // Reduced logging frequency - only log every 30 seconds
+        const now = Date.now();
+        if (!ws.lastQuoteLog || (now - ws.lastQuoteLog) > 30000) {
+          console.log('📡 Sending quotes for:', { futureSymbol, spotSymbol });
+          ws.lastQuoteLog = now;
+        }
+        
+        // Create broker info objects for status logging
+        const futureBrokerInfo = {
+          accountSetName: accountSet.name,
+          brokerName: normalizedFuture,
+          server: futureBroker.server,
+          accountNumber: futureBroker.accountNumber
+        };
+        
+        const spotBrokerInfo = {
+          accountSetName: accountSet.name,
+          brokerName: normalizedSpot,
+          server: spotBroker.server,
+          accountNumber: spotBroker.accountNumber
+        };
         
         // Try database first for both quotes
         let futureQuote = await databaseQuoteService.getQuoteFromDatabase(normalizedFuture, futureSymbol);
@@ -807,10 +890,10 @@ async function handleSubscribeQuote(ws, msg) {
 
         // Only call API if database cache is stale (> 10 seconds - PersistentDataCollection updates every 5s)
         if (!databaseQuoteService.isQuoteFresh(futureQuote, 10000)) {
-          console.log('🌐 Fetching fresh future quote for WebSocket - cache stale');
+          // Fetching fresh future quote...
           try {
             const futureToken = await getValidBrokerToken(futureBroker);
-            const apiQuote = await fetchQuote(futureToken, futureSymbol, futureBroker.terminal, futureBroker.id);
+            const apiQuote = await fetchQuote(futureToken, futureSymbol, futureBroker.terminal, futureBroker.id, futureBrokerInfo);
             if (apiQuote) {
               futureQuote = {
                 ...apiQuote,
@@ -824,7 +907,7 @@ async function handleSubscribeQuote(ws, msg) {
               console.log('🔄 Token invalid for WebSocket future quote, refreshing and retrying...');
               try {
                 const freshToken = await getValidBrokerToken(futureBroker, true);
-                const retryQuote = await fetchQuote(freshToken, futureSymbol, futureBroker.terminal, futureBroker.id);
+                const retryQuote = await fetchQuote(freshToken, futureSymbol, futureBroker.terminal, futureBroker.id, futureBrokerInfo);
                 if (retryQuote) {
                   futureQuote = {
                     ...retryQuote,
@@ -843,14 +926,14 @@ async function handleSubscribeQuote(ws, msg) {
             }
           }
         } else {
-          console.log(`💾 Using cached future quote - age: ${databaseQuoteService.getQuoteAgeMs(futureQuote)}ms`);
+          // Using cached future quote
         }
 
         if (!databaseQuoteService.isQuoteFresh(spotQuote, 10000)) {
-          console.log('🌐 Fetching fresh spot quote for WebSocket - cache stale');
+          // Fetching fresh spot quote...
           try {
             const spotToken = await getValidBrokerToken(spotBroker);
-            const apiQuote = await fetchQuote(spotToken, spotSymbol, spotBroker.terminal, spotBroker.id);
+            const apiQuote = await fetchQuote(spotToken, spotSymbol, spotBroker.terminal, spotBroker.id, spotBrokerInfo);
             if (apiQuote) {
               spotQuote = {
                 ...apiQuote,
@@ -864,7 +947,7 @@ async function handleSubscribeQuote(ws, msg) {
               console.log('🔄 Token invalid for WebSocket spot quote, refreshing and retrying...');
               try {
                 const freshToken = await getValidBrokerToken(spotBroker, true);
-                const retryQuote = await fetchQuote(freshToken, spotSymbol, spotBroker.terminal, spotBroker.id);
+                const retryQuote = await fetchQuote(freshToken, spotSymbol, spotBroker.terminal, spotBroker.id, spotBrokerInfo);
                 if (retryQuote) {
                   spotQuote = {
                     ...retryQuote,
@@ -883,11 +966,11 @@ async function handleSubscribeQuote(ws, msg) {
             }
           }
         } else {
-          console.log(`💾 Using cached spot quote - age: ${databaseQuoteService.getQuoteAgeMs(spotQuote)}ms`);
+          // Using cached spot quote
         }
 
         if (!futureQuote || !spotQuote) {
-          console.log('⚠️ Missing quotes for WebSocket update');
+          // Missing quotes for update
           return;
         }
         
@@ -907,7 +990,11 @@ async function handleSubscribeQuote(ws, msg) {
           }
         };
         
-        console.log(`📡 Broadcasting optimized quote update: ${futureQuote.source || 'cache'}/${spotQuote.source || 'cache'}`);
+        // Only log broadcast every 30 seconds
+        if (!ws.lastBroadcastLog || (now - ws.lastBroadcastLog) > 30000) {
+          console.log(`📡 Broadcasting optimized quote update: ${futureQuote.source || 'cache'}/${spotQuote.source || 'cache'}`);
+          ws.lastBroadcastLog = now;
+        };
         ws.send(JSON.stringify(quoteMessage));
       } catch (err) {
         console.error('❌ Quote fetch error:', err); 
@@ -1002,7 +1089,12 @@ async function handleSubscribePremium(ws, msg) {
             }
           }));
           
-          console.log(`✅ Sent optimized premium update for ${accountSetId}: buy=${premiumData.buyPremium.toFixed(5)}, sell=${premiumData.sellPremium.toFixed(5)} (age: ${premiumData.dataAge}ms)`);
+          // Only log premium updates every 30 seconds
+          const now = Date.now();
+          if (!ws.lastPremiumLog || (now - ws.lastPremiumLog) > 30000) {
+            console.log(`✅ Sent optimized premium update for ${accountSetId}: buy=${premiumData.buyPremium.toFixed(5)}, sell=${premiumData.sellPremium.toFixed(5)} (age: ${premiumData.dataAge}ms)`);
+            ws.lastPremiumLog = now;
+          }
         } else {
           // Fallback: Try to get recent premium data from premium table if available
           if (accountSet.premiumTableName) {
@@ -1023,7 +1115,11 @@ async function handleSubscribePremium(ws, msg) {
                   timestamp: latest.timestamp
                 }
               }));
-              console.log(`✅ Sent premium table update for ${accountSetId}`);
+              // Only log premium table updates every 30 seconds
+              if (!ws.lastPremiumTableLog || (now - ws.lastPremiumTableLog) > 30000) {
+                console.log(`✅ Sent premium table update for ${accountSetId}`);
+                ws.lastPremiumTableLog = now;
+              }
             }
           }
         }
@@ -1260,8 +1356,8 @@ async function handleSubscribeOpenOrders(ws, msg) {
       try {
         console.log('📡 Fetching open orders for account set:', accountSetId);
         
-        // Use the new fetchAllOpenOrders method from trading service
-        const openOrders = await tradingService.fetchAllOpenOrders(accountSetId);
+        // ✅ OPTIMIZED: Use targeted fetch for FluxNetwork trades only
+        const openOrders = await tradingService.fetchOrdersForActiveTradeTickets(accountSetId);
         
         // Debug: Log the orders being sent
         console.log('📦 Orders being sent via WebSocket:', JSON.stringify(openOrders.map(o => ({
@@ -1354,7 +1450,15 @@ async function broadcastBalanceUpdates(accountSetId) {
           await new Promise(resolve => setTimeout(resolve, 500));
         }
         
-        const data = await fetchBalanceAndPositions(broker);
+        // Create broker info for status logging
+        const brokerInfo = {
+          accountSetName: accountSet.name,
+          brokerName: broker.server, // Use server as broker name for balance operations
+          server: broker.server,
+          accountNumber: broker.accountNumber
+        };
+        
+        const data = await fetchBalanceAndPositions(broker, brokerInfo);
         console.log('✅ Balance data fetched for broker:', broker.terminal, data.balance);
         
         const balanceMessage = {
@@ -1470,6 +1574,11 @@ syncDatabase()
       console.error('❌ Failed to start database cleanup service:', err);
     }
 
+    // Start comprehensive broker status logger (shows all account sets)
+    setTimeout(() => {
+      brokerStatusLogger.start();
+    }, 2000);
+
     
     // Start cleanup scheduler
     const cleanupInterval = parseInt(process.env.CLEANUP_INTERVAL_HOURS) || 24;
@@ -1490,7 +1599,7 @@ syncDatabase()
       
       // Start API health monitoring
       setTimeout(() => {
-        apiErrorMonitor.startHealthChecking(30000); // Check every 30 seconds
+        // apiErrorMonitor.startHealthChecking(30000); // Disabled - causing timeout errors
         logger.info('🏥 API Health Monitoring started');
       }, 5000); // Wait 5 seconds after server start
     });

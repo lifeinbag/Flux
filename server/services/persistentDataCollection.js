@@ -6,6 +6,7 @@ const logger = require('../utils/logger');
 const https = require('https');
 const axios = require('axios');
 const intelligentNormalizer = require('../utils/intelligentBrokerNormalizer');
+const simpleStatusLogger = require('../utils/simpleStatusLogger');
 
 const mt4Client = axios.create({
   baseURL: process.env.MT4_API_URL,
@@ -203,7 +204,7 @@ class PersistentDataCollectionService {
       const token = await this.getValidToken(broker);
       const quote = await this.fetchQuote(token, symbol, broker.terminal);
       
-      // Add token and terminal to quote for trade session check
+      // Add token and terminal to quote for database storage
       if (quote) {
         quote.token = token;
         quote.terminal = broker.terminal;
@@ -249,7 +250,7 @@ class PersistentDataCollectionService {
       new Date(broker.tokenExpiresAt).getTime() > (now + 300000);
 
     if (tokenValid) {
-      console.log(`✅ Using valid database token for ${broker.terminal} ${broker.accountNumber}`);
+      // Using valid database token
       return broker.token;
     }
 
@@ -355,36 +356,10 @@ class PersistentDataCollectionService {
     return Date.now() - new Date(quote.timestamp).getTime();
   }
 
-  async checkIsTradeSession(token, symbol, terminal) {
-    try {
-      const client = terminal === 'MT5' ? mt5Client : mt4Client;
-      
-      const response = await client.get('/IsTradeSession', {
-        params: { id: token, symbol }
-      });
-      
-      const isTradeSession = response.data === true || response.data === 'true';
-      
-      if (!isTradeSession) {
-        logger.info(`🚫 Symbol ${symbol} is NOT in trade session - skipping bid/ask storage`);
-      }
-      
-      return isTradeSession;
-    } catch (error) {
-      logger.error(`❌ Error checking trade session for ${symbol} on ${terminal}:`, error.message);
-      return false;
-    }
-  }
 
   async storeBidAskData(companyName, symbol, quote, token, terminal) {
     try {
-      // Check if symbol is in trade session before storing
-      const isInTradeSession = await this.checkIsTradeSession(token, symbol, terminal);
-      
-      if (!isInTradeSession) {
-        return; // Skip storage - already logged in checkIsTradeSession
-      }
-
+      // REMOVED: IsTradeSession check - store all quote data regardless of trade session status
       const tableName = `bid_ask_${companyName}`;
 
       await sequelize.query(

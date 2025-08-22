@@ -5,28 +5,94 @@ const path = require('path');
 
 const level = process.env.NODE_ENV === 'production' ? 'info' : 'debug';
 
+// Custom format that outputs exactly like console.log for files
+const consoleFormat = winston.format.printf(({ level, message, timestamp }) => {
+  return message; // Just return the raw message, no timestamps or level prefixes for console-like output
+});
+
 const logger = winston.createLogger({
   level,
   transports: [
-    // still log to console
+    // Console output (keep original format)
     new winston.transports.Console({
       format: winston.format.simple()
     }),
-    // also append everything ≥ debug to server.log:
+    // File output - make it look exactly like console output
     new winston.transports.File({
       filename: 'logs/server.log',
       level: 'debug',
-      format: winston.format.json()
+      format: consoleFormat
     })
   ]
 });
 
+// Store original console methods
+const originalConsole = {
+  log: console.log,
+  error: console.error,
+  warn: console.warn,
+  info: console.info,
+  debug: console.debug
+};
+
+// Intercept console.log and friends to also write to files
+console.log = function(...args) {
+  const message = args.map(arg => 
+    typeof arg === 'object' ? JSON.stringify(arg, null, 2) : String(arg)
+  ).join(' ');
+  
+  // Call original console.log for terminal output
+  originalConsole.log(...args);
+  
+  // Also log to files with exact same message
+  logger.info(message);
+};
+
+console.error = function(...args) {
+  const message = args.map(arg => 
+    typeof arg === 'object' ? JSON.stringify(arg, null, 2) : String(arg)
+  ).join(' ');
+  
+  originalConsole.error(...args);
+  logger.error(message);
+};
+
+console.warn = function(...args) {
+  const message = args.map(arg => 
+    typeof arg === 'object' ? JSON.stringify(arg, null, 2) : String(arg)
+  ).join(' ');
+  
+  originalConsole.warn(...args);
+  logger.warn(message);
+};
+
+console.info = function(...args) {
+  const message = args.map(arg => 
+    typeof arg === 'object' ? JSON.stringify(arg, null, 2) : String(arg)
+  ).join(' ');
+  
+  originalConsole.info(...args);
+  logger.info(message);
+};
+
+console.debug = function(...args) {
+  const message = args.map(arg => 
+    typeof arg === 'object' ? JSON.stringify(arg, null, 2) : String(arg)
+  ).join(' ');
+  
+  originalConsole.debug(...args);
+  logger.debug(message);
+};
+
 class Logger {
   constructor() {
     this.winston = logger;
+    // Keep premium_system.log for backward compatibility but it's mostly unused now
     this.logFile = path.join(__dirname, '..', 'premium_system.log');
+    this.orderExecutionLogFile = path.join(__dirname, '..', 'logs', 'order-execution.log');
     this.maxFileSize = 10 * 1024 * 1024; // 10MB
     this.ensureLogFile();
+    this.ensureOrderExecutionLogFile();
   }
 
   ensureLogFile() {
@@ -36,6 +102,20 @@ class Logger {
       }
     } catch (err) {
       console.error('Failed to create log file:', err);
+    }
+  }
+
+  ensureOrderExecutionLogFile() {
+    try {
+      const logDir = path.dirname(this.orderExecutionLogFile);
+      if (!fs.existsSync(logDir)) {
+        fs.mkdirSync(logDir, { recursive: true });
+      }
+      if (!fs.existsSync(this.orderExecutionLogFile)) {
+        fs.writeFileSync(this.orderExecutionLogFile, '');
+      }
+    } catch (err) {
+      console.error('Failed to create order execution log file:', err);
     }
   }
 
@@ -187,6 +267,44 @@ class Logger {
 
   wsError(err) {
     this.error('[WS] ⚠ error', err.message || 'WebSocket error');
+  }
+
+  // Order execution specific logging
+  orderExecution(message, data = null) {
+    const timestamp = this.getTimestamp();
+    let logEntry = `[${timestamp}] ${message}`;
+    
+    if (data) {
+      if (typeof data === 'object') {
+        logEntry += `\nData: ${JSON.stringify(data, null, 2)}`;
+      } else {
+        logEntry += `\nData: ${data}`;
+      }
+    }
+    
+    logEntry += '\n';
+
+    try {
+      // Write to order execution log file
+      fs.appendFileSync(this.orderExecutionLogFile, logEntry);
+      
+      // Also write to main server log (for now since console.log is intercepted)
+      console.log(`[ORDER] ${message}`, data || '');
+    } catch (err) {
+      console.error('Failed to write to order execution log:', err);
+    }
+  }
+
+  orderSuccess(message, data = null) {
+    this.orderExecution(`✅ ${message}`, data);
+  }
+
+  orderError(message, data = null) {
+    this.orderExecution(`❌ ${message}`, data);
+  }
+
+  orderInfo(message, data = null) {
+    this.orderExecution(`📊 ${message}`, data);
   }
 }
 

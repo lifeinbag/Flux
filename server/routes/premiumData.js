@@ -5,6 +5,9 @@ const { Sequelize, DataTypes } = require('sequelize');
 const sequelize = require('../config/database');
 const auth = require('../middleware/auth');
 const axios = require('axios');
+const brokerStatusLogger = require('../utils/brokerStatusLogger');
+const logLevelController = require('../utils/logLevelController');
+const simpleStatusLogger = require('../utils/simpleStatusLogger');
 
 // Store active premium recording intervals
 const premiumIntervals = new Map();
@@ -19,11 +22,11 @@ async function getValidToken(broker) {
                     new Date(broker.tokenExpiresAt).getTime() > (now + 300000);
   
   if (tokenValid) {
-    console.log(`✅ Using valid database token for ${broker.terminal} ${broker.accountNumber}`);
+    simpleStatusLogger.updateBrokerStatus(broker.server, broker.accountNumber, broker.terminal, 'token', 'success');
     return broker.token;
   }
   
-  console.log(`🔄 Fetching new token for ${broker.terminal} ${broker.accountNumber}...`);
+  // Fetching new token...
   
   try {
     // Clear expired token
@@ -46,11 +49,11 @@ async function getValidToken(broker) {
     broker.tokenExpiresAt = new Date(Date.now() + 22 * 60 * 60 * 1000);
     await broker.save();
     
-    console.log(`✅ New token saved for ${broker.terminal} ${broker.accountNumber}`);
+    simpleStatusLogger.updateBrokerStatus(broker.server, broker.accountNumber, broker.terminal, 'token', 'success');
     return token;
     
   } catch (error) {
-    console.error(`❌ Token fetch failed for ${broker.terminal} ${broker.accountNumber}:`, error.message);
+    simpleStatusLogger.updateBrokerStatus(broker.server, broker.accountNumber, broker.terminal, 'token', 'failed', error.message);
     throw error;
   }
 }
@@ -73,24 +76,35 @@ async function ensureBrokerTokens(broker1, broker2) {
 // Helper: Fetch quotes with MT5/MT4 fallback
 async function fetchQuote(token, symbol) {
   const enc = encodeURIComponent(symbol);
-  const MT5_URL = process.env.MT5_QUOTE_URL || 'https://injamam-001-site1.htempurl.com';
-  const MT4_URL = process.env.MT4_QUOTE_URL || 'http://injamam-001-site2.htempurl.com';
+  
+  // Use standard API URL environment variables
+  const MT5_URL = process.env.MT5_API_URL;
+  const MT4_URL = process.env.MT4_API_URL;
+  
+  if (!MT5_URL && !MT4_URL) {
+    throw new Error('Missing required environment variables: MT5_API_URL or MT4_API_URL must be set');
+  }
   
 try {
-  const res = await axios.get(`${MT5_URL}/GetQuote?id=${token}&symbol=${enc}`, {
-    httpsAgent: new (require('https').Agent)({
-      rejectUnauthorized: false
-    })
-  });
-  return res.data;
+  if (MT5_URL) {
+    const res = await axios.get(`${MT5_URL}/GetQuote?id=${token}&symbol=${enc}`, {
+      httpsAgent: new (require('https').Agent)({
+        rejectUnauthorized: false
+      })
+    });
+    return res.data;
+  }
 } catch {
-  const res2 = await axios.get(`${MT4_URL}/GetQuote?id=${token}&symbol=${enc}`, {
-    httpsAgent: new (require('https').Agent)({
-      rejectUnauthorized: false
-    })
-  });
-  return res2.data;
+  if (MT4_URL) {
+    const res2 = await axios.get(`${MT4_URL}/GetQuote?id=${token}&symbol=${enc}`, {
+      httpsAgent: new (require('https').Agent)({
+        rejectUnauthorized: false
+      })
+    });
+    return res2.data;
+  }
 }
+throw new Error('All API endpoints failed to respond');
 }
 
 // Create or get premium table for a company
@@ -188,7 +202,7 @@ async function recordPremiumData(tableName, accountSetId) {
 
     // Only call API if database cache is stale (> 10 seconds for premium recording)
     if (!databaseQuoteService.isQuoteFresh(futureQuote, 10000)) {
-      console.log(`🌐 Fetching fresh future quote for premium recording - cache stale`);
+      // Fetching fresh future quote...
       await ensureBrokerTokens(broker1, broker2);
       if (broker1.token) {
         const apiQuote = await fetchQuote(broker1.token, accountSet.futureSymbol).catch(() => null);
@@ -203,11 +217,11 @@ async function recordPremiumData(tableName, accountSetId) {
         }
       }
     } else {
-      console.log(`💾 Using cached future quote for premium - age: ${databaseQuoteService.getQuoteAgeMs(futureQuote)}ms`);
+      // Using cached future quote
     }
 
     if (!databaseQuoteService.isQuoteFresh(spotQuote, 10000)) {
-      console.log(`🌐 Fetching fresh spot quote for premium recording - cache stale`);
+      // Fetching fresh spot quote...
       await ensureBrokerTokens(broker1, broker2);
       if (broker2.token) {
         const apiQuote = await fetchQuote(broker2.token, accountSet.spotSymbol).catch(() => null);
@@ -222,12 +236,11 @@ async function recordPremiumData(tableName, accountSetId) {
         }
       }
     } else {
-      console.log(`💾 Using cached spot quote for premium - age: ${databaseQuoteService.getQuoteAgeMs(spotQuote)}ms`);
+      // Using cached spot quote
     }
     
     if (!futureQuote || !spotQuote) {
-      console.log(`⚠️ Failed to get quotes for premium recording ${setId}`);
-      return;
+      return; // Failed to get quotes
     }
     
     // Calculate premiums
@@ -245,7 +258,7 @@ async function recordPremiumData(tableName, accountSetId) {
       }
     );
     
-    console.log(`📊 Premium recorded: buy=${buyPremium?.toFixed(5)}, sell=${sellPremium?.toFixed(5)} (${futureQuote.source || 'cache'}/${spotQuote.source || 'cache'})`);
+    // Premium recorded successfully
   } catch (err) {
     console.error(`Error in recordPremiumData for ${tableName}:`, err);
   }
@@ -338,6 +351,95 @@ router.delete('/:companyName/:accountSetId', auth, async (req, res) => {
   } catch (err) {
     console.error('Error stopping premium recording:', err);
     res.status(500).json({ success: false, error: 'Failed to stop premium recording' });
+  }
+});
+
+// Get broker status summary
+router.get('/status/brokers', auth, async (req, res) => {
+  try {
+    const statusSummary = brokerStatusLogger.getStatusSummary();
+    res.json({
+      success: true,
+      data: statusSummary
+    });
+  } catch (error) {
+    console.error('❌ Error getting broker status:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Control logging settings
+router.post('/logging/toggle-verbose', auth, async (req, res) => {
+  try {
+    const verboseEnabled = logLevelController.toggleVerboseLogging();
+    res.json({
+      success: true,
+      data: {
+        verboseLogging: verboseEnabled,
+        message: verboseEnabled ? 'Verbose logging enabled' : 'Verbose logging disabled'
+      }
+    });
+  } catch (error) {
+    console.error('❌ Error toggling verbose logging:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+router.post('/logging/toggle-status', auth, async (req, res) => {
+  try {
+    const statusEnabled = logLevelController.toggleStatusDisplay();
+    res.json({
+      success: true,
+      data: {
+        statusDisplayEnabled: statusEnabled,
+        message: statusEnabled ? 'Status display enabled' : 'Status display disabled'
+      }
+    });
+  } catch (error) {
+    console.error('❌ Error toggling status display:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+router.get('/logging/settings', auth, async (req, res) => {
+  try {
+    const settings = logLevelController.getSettings();
+    res.json({
+      success: true,
+      data: settings
+    });
+  } catch (error) {
+    console.error('❌ Error getting logging settings:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+router.get('/logging/suppressed', auth, async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit) || 50;
+    const suppressedMessages = logLevelController.getSuppressedMessages(limit);
+    res.json({
+      success: true,
+      data: suppressedMessages
+    });
+  } catch (error) {
+    console.error('❌ Error getting suppressed messages:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
   }
 });
 

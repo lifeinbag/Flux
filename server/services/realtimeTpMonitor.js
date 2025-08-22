@@ -3,6 +3,15 @@ const axios = require('axios');
 const logger = require('../utils/logger');
 const { TokenManager } = require('../token-manager');
 
+// Helper function to get API URL from environment variables
+function getApiUrl(terminal) {
+  const url = terminal === 'MT4' ? process.env.MT4_API_URL : process.env.MT5_API_URL;
+  if (!url) {
+    throw new Error(`Missing required environment variable: ${terminal}_API_URL`);
+  }
+  return url;
+}
+
 class RealtimeTpMonitor {
   constructor() {
     this.activeTrades = new Map(); // Cache of active trades with TP
@@ -181,8 +190,7 @@ class RealtimeTpMonitor {
   async getBrokerPositions(broker) {
     try {
       const token = await this.getValidToken(broker);
-      const apiUrl = broker.terminal === 'MT4' ? 
-        'https://mt4.premiumprofit.live' : 'https://mt5.premiumprofit.live';
+      const apiUrl = getApiUrl(broker.terminal);
       
       const response = await axios.get(`${apiUrl}/OpenedOrders`, {
         params: { id: token },
@@ -271,10 +279,8 @@ class RealtimeTpMonitor {
         this.getValidToken(trade.broker2)
       ]);
       
-      const broker1ApiUrl = trade.broker1.terminal === 'MT4' ? 
-        'https://mt4.premiumprofit.live' : 'https://mt5.premiumprofit.live';
-      const broker2ApiUrl = trade.broker2.terminal === 'MT4' ? 
-        'https://mt4.premiumprofit.live' : 'https://mt5.premiumprofit.live';
+      const broker1ApiUrl = getApiUrl(trade.broker1.terminal);
+      const broker2ApiUrl = getApiUrl(trade.broker2.terminal);
       
       const [futureQuote, spotQuote] = await Promise.all([
         axios.get(`${broker1ApiUrl}/GetQuote`, {
@@ -359,8 +365,7 @@ class RealtimeTpMonitor {
 
   // Close a single position
   async closePosition(broker, token, ticket, volume) {
-    const apiUrl = broker.terminal === 'MT4' ? 
-      'https://mt4.premiumprofit.live' : 'https://mt5.premiumprofit.live';
+    const apiUrl = getApiUrl(broker.terminal);
     
     const response = await axios.get(`${apiUrl}/OrderClose`, {
       params: {

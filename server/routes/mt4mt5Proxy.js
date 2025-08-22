@@ -2,9 +2,13 @@ const express = require('express');
 const axios = require('axios');
 const router = express.Router();
 
-// MT4/MT5 API URLs
-const MT5_API_URL = 'https://mt5.premiumprofit.live';
-const MT4_API_URL = 'https://mt4.premiumprofit.live';
+// Get API URLs from environment variables
+const MT5_API_URL = process.env.MT5_API_URL;
+const MT4_API_URL = process.env.MT4_API_URL;
+
+if (!MT5_API_URL || !MT4_API_URL) {
+  throw new Error('Missing required environment variables: MT4_API_URL and MT5_API_URL must be set');
+}
 
 // MT5 proxy endpoint
 router.get('/mt5/opened-orders', async (req, res) => {

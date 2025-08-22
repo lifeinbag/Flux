@@ -5,7 +5,7 @@ import symbolsCache from '../services/symbolsCache';
 import SellPremiumChart from '../components/SellPremiumChart';
 import { connectWS, onMessage, subscribeToQuotes, subscribeToOpenOrders, isWSConnected, getWSStatus, clearQuoteSubscriptions } from '../services/wsService';
 import { TrendingUp, DollarSign, BarChart3, Activity, AlertTriangle, Lock, Unlock, Clock } from 'lucide-react';
-import ApiStatusMonitor from '../components/ApiStatusMonitor';
+// API Status Monitor removed
 import './Dashboard.css';
 
 export const DashboardContext = createContext();
@@ -992,8 +992,6 @@ export default function Dashboard() {
           </div>
         )}
         
-        {/* API Status Monitor */}
-        <ApiStatusMonitor />
         
         {selectedSetId && (
           <div style={{

@@ -7,11 +7,13 @@ class ApiErrorMonitor {
     this.maxErrorHistory = 50; // Keep last 50 errors
     
     // Initialize API endpoints to monitor
+    if (!process.env.MT4_API_URL || !process.env.MT5_API_URL) {
+      throw new Error('Missing required environment variables: MT4_API_URL and MT5_API_URL must be set');
+    }
+    
     this.apiEndpoints = {
-      'MT4_API': process.env.MT4_API_URL || 'https://mt4.premiumprofit.live',
-      'MT5_API': process.env.MT5_API_URL || 'https://mt5.premiumprofit.live',
-      'MT4_FLUX': 'https://mt4.fluxnetwork.one:443',
-      'MT5_FLUX': 'https://mt5.fluxnetwork.one:443'
+      'MT4_API': process.env.MT4_API_URL,
+      'MT5_API': process.env.MT5_API_URL
     };
     
     // Initialize all APIs as unknown status

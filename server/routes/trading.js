@@ -1522,6 +1522,44 @@ router.post('/populate-symbols-cache', async (req, res) => {
   }
 });
 
+// ─── GET /api/trading/closed-trades - Get closed trades for user ─────────
+router.get('/closed-trades', async (req, res) => {
+  try {
+    const { accountSetId } = req.query;
+    const userId = req.user.id;
+    
+    let whereClause = { userId };
+    if (accountSetId) {
+      whereClause.accountSetId = accountSetId;
+    }
+
+    const closedTrades = await ClosedTrade.findAll({
+      where: whereClause,
+      include: [
+        { 
+          model: AccountSet,
+          as: 'accountSet',
+          attributes: ['id', 'name', 'futureSymbol', 'spotSymbol']
+        }
+      ],
+      order: [['createdAt', 'DESC']],
+      limit: 50 // Limit to recent 50 closed trades
+    });
+
+    res.json({
+      success: true,
+      trades: closedTrades
+    });
+
+  } catch (error) {
+    console.error('Error fetching closed trades:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
 // ─── GET /api/trading/debug-active-trades - Debug active trades in database ─────────
 router.get('/debug-active-trades', async (req, res) => {
   try {

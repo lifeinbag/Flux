@@ -83,15 +83,16 @@ class TradingService {
         delete fullParams.slippage;
       }
 
-      // Log order execution details
-      console.log('Order execution details:', {
+      // Log order execution details to both console and order-execution.log
+      const executionDetails = {
         timestamp: new Date().toISOString(),
         brokerType: broker.terminal,
         brokerId: broker.id,
         apiUrl: client.defaults.baseURL,
         parameters: fullParams
-      });
+      };
 
+      logger.orderInfo('Order Execution Started', executionDetails);
       console.log(`Executing order on ${broker.terminal} broker (ID: ${broker.id})`);
       console.log('Order parameters:', JSON.stringify(fullParams, null, 2));
       console.log('API URL:', client.defaults.baseURL);
@@ -121,6 +122,14 @@ class TradingService {
         }
       }
       
+      // Log successful order execution
+      const responseDetails = {
+        ticket: ticket ? String(ticket) : null,
+        latency: `${latency}ms`,
+        response: response.data
+      };
+      logger.orderSuccess('Order Executed Successfully', responseDetails);
+
       return {
         success: true,
         ticket: ticket ? String(ticket) : null,
@@ -135,15 +144,17 @@ class TradingService {
       // Record latency even for failed orders
       latencyMonitor.addLatencyRecord(broker.id, 'orderSend', latency);
       
-      // Log error details
-      console.error('Order execution error details:', {
+      // Log error details to order execution log
+      const errorDetails = {
         timestamp: new Date().toISOString(),
         brokerType: broker.terminal,
         brokerId: broker.id,
         error: error.message,
         errorResponse: error.response?.data,
-        errorStatus: error.response?.status
-      });
+        errorStatus: error.response?.status,
+        latency: `${latency}ms`
+      };
+      logger.orderError('Order Execution Failed', errorDetails);
 
       console.error(`Order execution failed on ${broker.terminal} broker (ID: ${broker.id})`);
       console.error('Error message:', error.message);
@@ -790,7 +801,115 @@ class TradingService {
     }
   }
 
-  // Fetch all open orders for an account set
+  // ✅ NEW: Fetch orders only for specific FluxNetwork trade tickets
+  async fetchOrdersForActiveTradeTickets(accountSetId) {
+    try {
+      console.log('🎯 Fetching orders for active FluxNetwork trades only:', accountSetId);
+
+      // First, get active FluxNetwork trades for this account set
+      const { ActiveTrade } = require('../models');
+      const activeTrades = await ActiveTrade.findAll({
+        where: { 
+          accountSetId,
+          status: ['Active', 'PartiallyFilled']
+        }
+      });
+
+      if (activeTrades.length === 0) {
+        console.log('⏭️ No active FluxNetwork trades found, skipping order fetch');
+        return [];
+      }
+
+      // Extract ticket numbers from active trades
+      const targetTickets = new Set();
+      activeTrades.forEach(trade => {
+        if (trade.broker1Ticket) targetTickets.add(trade.broker1Ticket);
+        if (trade.broker2Ticket) targetTickets.add(trade.broker2Ticket);
+      });
+
+      console.log('🎯 Looking for orders with tickets:', Array.from(targetTickets));
+
+      // Get account set with brokers
+      const accountSet = await AccountSet.findByPk(accountSetId, {
+        include: [{
+          model: Broker,
+          as: 'brokers',
+          order: [['position', 'ASC']]
+        }]
+      });
+
+      if (!accountSet || !accountSet.brokers || accountSet.brokers.length === 0) {
+        console.log('⚠️ No account set or brokers found for:', accountSetId);
+        return [];
+      }
+
+      const matchedOrders = [];
+
+      // Fetch orders from each broker and filter for target tickets
+      for (const broker of accountSet.brokers) {
+        try {
+          const client = broker.terminal === 'MT5' ? mt5Client : mt4Client;
+          const token = await this.getValidBrokerToken(broker);
+
+          console.log(`📡 Checking ${broker.terminal} broker ${broker.id} for target tickets`);
+
+          const response = await client.get('/OpenedOrders', {
+            params: { id: token },
+            timeout: 10000
+          });
+
+          let orders = response.data || [];
+          
+          // Ensure orders is an array
+          if (!Array.isArray(orders)) {
+            orders = orders ? [orders] : [];
+          }
+
+          // Filter for target tickets only
+          const filteredOrders = orders.filter(order => {
+            const ticket = String(order.ticket || order.order || order.ticketNumber || order.id);
+            return targetTickets.has(ticket);
+          });
+
+          // Enrich matched orders with broker information
+          const enrichedOrders = filteredOrders.map(order => ({
+            ...order,
+            brokerId: broker.id,
+            brokerName: broker.name,
+            brokerPosition: broker.position,
+            terminal: broker.terminal,
+            accountNumber: broker.accountNumber,
+            // Normalize common fields
+            ticket: order.ticket || order.order || order.ticketNumber || order.id,
+            symbol: order.symbol,
+            type: order.type || order.orderType || order.cmd,
+            lots: order.lots || order.volume || order.volumeSize,
+            openPrice: order.openPrice || order.price || order.open_price,
+            openTime: order.openTime || order.open_time || order.time,
+            profit: order.profit || 0,
+            swap: order.swap || 0,
+            commission: order.commission || 0
+          }));
+
+          matchedOrders.push(...enrichedOrders);
+          console.log(`✅ Found ${enrichedOrders.length} FluxNetwork orders from broker ${broker.id}`);
+
+        } catch (brokerError) {
+          console.error(`❌ Error fetching orders from broker ${broker.id}:`, brokerError.message);
+          // Continue with other brokers even if one fails
+        }
+      }
+
+      console.log(`🎯 Total FluxNetwork orders found: ${matchedOrders.length}`);
+      return matchedOrders;
+
+    } catch (error) {
+      console.error('❌ Error in fetchOrdersForActiveTradeTickets:', error.message);
+      return [];
+    }
+  }
+
+  // Fetch all open orders for an account set (legacy method)
   async fetchAllOpenOrders(accountSetId) {
     try {
       console.log('🔍 Fetching all open orders for account set:', accountSetId);
