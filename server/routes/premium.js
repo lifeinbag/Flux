@@ -9,22 +9,22 @@ const { QueryTypes } = require('sequelize');
  * Query params:
  *   - tf:           timeframe in minutes (1,5,15,60,1440,…)
  *   - accountSetId: UUID of the AccountSet
- *   - days:         look-back days (default 90)
- *   - limit:        max bars (default 10000)
+ *   - days:         look-back days (optional - if not provided, returns ALL data)
+ *   - limit:        max bars (optional - if not provided, no limit)
  */
 router.get('/premium-candles', async (req, res) => {
   try {
-    const { tf, accountSetId, days = 90, limit = 10000 } = req.query;
+    const { tf, accountSetId, days = null, limit = null } = req.query;
     if (!tf || !accountSetId) {
       return res
         .status(400)
         .json({ success: false, error: 'Missing tf or accountSetId' });
     }
 
-    // Convert to numbers
+    // Convert to numbers with defaults
     const minutes  = Number(tf);
-    const lookback = Number(days);
-    const maxBars  = Number(limit);
+    const lookback = days ? Number(days) : null;
+    const maxBars  = limit ? Number(limit) : 50000; // Default max 50k bars for performance
 
     // 1️⃣ Lookup which table holds this set’s data
     const tableRows = await sequelize.query(
@@ -44,39 +44,54 @@ router.get('/premium-candles', async (req, res) => {
     const tableName = tableRows[0].premiumTableName;
     console.log(`✅ Using shared premium table: ${tableName} for AccountSet: ${accountSetId}`);
 
-    // 2️⃣ Bucket into epoch-based intervals
+    // 2️⃣ Bucket into epoch-based intervals - support ALL data or filtered
     //    floor(epoch/tf*60)*tf*60 groups timestamp into tf-minute windows
+    let whereClause = '';
+    let limitClause = '';
+    
+    if (lookback) {
+      whereClause = `WHERE "timestamp" > now() - (:lookback || ' days')::interval`;
+    }
+    
+    // Always apply limit for performance (either user-specified or default)
+    limitClause = 'LIMIT :limit';
+    
     const sql = `
       WITH buckets AS (
         SELECT
           sell_premium,
+          buy_premium,
           "timestamp",
           floor(extract(epoch FROM "timestamp") / (:tf * 60)) * (:tf * 60) AS bucket
         FROM "${tableName}"
-        WHERE "timestamp" > now() - (:lookback || ' days')::interval
+        ${whereClause}
       )
       SELECT
         bucket                                    AS time,
         (array_agg(sell_premium ORDER BY "timestamp"))[1]      AS open,
         MAX(sell_premium)                         AS high,
         MIN(sell_premium)                         AS low,
-        (array_agg(sell_premium ORDER BY "timestamp" DESC))[1] AS close
+        (array_agg(sell_premium ORDER BY "timestamp" DESC))[1] AS close,
+        COUNT(*)                                  AS volume,
+        AVG(buy_premium)                         AS buy_premium_avg,
+        AVG(sell_premium)                        AS sell_premium_avg
       FROM buckets
       GROUP BY bucket
       ORDER BY bucket
-      LIMIT :limit;
+      ${limitClause};
     `;
 
+    const replacements = { tf: minutes, limit: maxBars };
+    if (lookback) replacements.lookback = lookback;
+
     const bars = await sequelize.query(sql, {
-      replacements: {
-        tf: minutes,
-        lookback,
-        limit: maxBars
-      },
+      replacements,
       type: QueryTypes.SELECT
     });
 
-    console.log(`📊 Found ${bars.length} premium candles from shared table ${tableName} (${days} days, ${tf}m timeframe)`);
+    const dataDescription = lookback ? `${lookback} days` : 'ALL historical data';
+    const limitDescription = limit ? `, limited to ${limit} bars` : `, limited to ${maxBars} bars (default)`;
+    console.log(`📊 Found ${bars.length} premium candles from shared table ${tableName} (${dataDescription}, ${tf}m timeframe${limitDescription})`);
     return res.json({ success: true, data: bars });
   } catch (err) {
     console.error('[/api/premium-candles] ERROR:', err);

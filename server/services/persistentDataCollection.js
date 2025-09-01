@@ -8,6 +8,7 @@ const axios = require('axios');
 const intelligentNormalizer = require('../utils/intelligentBrokerNormalizer');
 const simpleStatusLogger = require('../utils/simpleStatusLogger');
 const brokerStatusLogger = require('../utils/brokerStatusLogger');
+const tradeSessionService = require('./tradeSessionService');
 
 // 🔧 DEBUG CONTROL - Reads from environment variable or defaults to false
 const DEBUG_ENABLED = process.env.DEBUG_ENABLED === 'true';
@@ -34,6 +35,9 @@ class PersistentDataCollectionService {
     if (this.initialized) return;
 
     try {
+      // Initialize trade session service
+      tradeSessionService.startPeriodicCleanup();
+      logger.info('🌍 Trade session service initialized');
       const lockedSets = await AccountSet.findAll({
         where: {
           symbolsLocked: true,
@@ -104,7 +108,7 @@ class PersistentDataCollectionService {
       } catch (error) {
         logger.error(`Error in data collection for ${collectionKey}:`, error.message);
       }
-    }, 500); // 🚀 500ms for ultra-fast updates (2x faster than before)
+    }, process.env.PREMIUM_COLLECTION_INTERVAL || 500); // Configurable interval for premium data collection
 
     this.activeCollections.set(collectionKey, {
       interval,
@@ -122,35 +126,55 @@ class PersistentDataCollectionService {
     } = config;
 
     try {
+      // 🌍 TRADE SESSION CHECK: Avoid unnecessary API calls during market close
+      const [futureSessionOpen, spotSessionOpen] = await tradeSessionService.checkMultipleSymbols([
+        { symbol: futureSymbol, terminal: broker1Terminal, token: broker1Token },
+        { symbol: spotSymbol, terminal: broker2Terminal, token: broker2Token }
+      ]);
+
+      if (!futureSessionOpen && !spotSessionOpen) {
+        // Both markets are closed, skip data collection entirely
+        logger.info(`⏰ Both markets closed: ${futureSymbol} (${broker1Terminal}) & ${spotSymbol} (${broker2Terminal}) - skipping data collection`);
+        return;
+      }
+
       // ✅ DATABASE-FIRST APPROACH: Check cache before API calls
       let futureQuote = await this.getQuoteFromBidAskTable(company1, futureSymbol);
       let spotQuote = await this.getQuoteFromBidAskTable(company2, spotSymbol);
 
-      // 🚀 ULTRA-FAST: Only fetch from API if database cache is stale (> 2 seconds for ultra-fast data)  
-      if (!this.isQuoteFresh(futureQuote, 2000)) {
-        const cacheAge = futureQuote ? this.getQuoteAgeMs(futureQuote) : 'N/A';
-        if (DEBUG_ENABLED) logger.info(`🌐 API FALLBACK: Fetching fresh future quote for ${company1}/${futureSymbol} - cache age: ${cacheAge}ms`);
+      // Only fetch fresh quotes if sessions are open
+      if (!this.isQuoteFresh(futureQuote, 500) && futureSessionOpen) {
         futureQuote = await this.fetchQuoteWithRetry(accountSetId, futureSymbol, 1);
         if (futureQuote) {
           await this.storeBidAskData(company1, futureSymbol, futureQuote, futureQuote.token, futureQuote.terminal);
         }
-      } else {
-        if (DEBUG_ENABLED) logger.info(`💾 DATABASE HIT: Using cached future quote for ${company1}/${futureSymbol} - age: ${this.getQuoteAgeMs(futureQuote)}ms`);
       }
 
-      if (!this.isQuoteFresh(spotQuote, 2000)) {
-        const cacheAge = spotQuote ? this.getQuoteAgeMs(spotQuote) : 'N/A';
-        if (DEBUG_ENABLED) logger.info(`🌐 API FALLBACK: Fetching fresh spot quote for ${company2}/${spotSymbol} - cache age: ${cacheAge}ms`);
+      if (!this.isQuoteFresh(spotQuote, 500) && spotSessionOpen) {
         spotQuote = await this.fetchQuoteWithRetry(accountSetId, spotSymbol, 2);
         if (spotQuote) {
           await this.storeBidAskData(company2, spotSymbol, spotQuote, spotQuote.token, spotQuote.terminal);
         }
-      } else {
-        if (DEBUG_ENABLED) logger.info(`💾 DATABASE HIT: Using cached spot quote for ${company2}/${spotSymbol} - age: ${this.getQuoteAgeMs(spotQuote)}ms`);
       }
 
       if (!futureQuote || !spotQuote) {
-        logger.warn(`⚠️ Missing quotes for premium calculation: future=${!!futureQuote}, spot=${!!spotQuote}`);
+        // Get broker information for better debugging
+        const accountSet = await AccountSet.findByPk(accountSetId, {
+          include: [{
+            model: Broker,
+            as: 'brokers',
+            separate: true,
+            order: [['position', 'ASC']]
+          }]
+        });
+        
+        const futureBroker = accountSet?.brokers?.find(b => b.position === 1);
+        const spotBroker = accountSet?.brokers?.find(b => b.position === 2);
+        
+        const futureInfo = futureBroker ? `${futureBroker.accountNumber}@${futureBroker.server}` : 'Unknown';
+        const spotInfo = spotBroker ? `${spotBroker.accountNumber}@${spotBroker.server}` : 'Unknown';
+        
+        logger.warn(`⚠️ Missing quotes for premium calculation: future=${!!futureQuote} (${company1}/${futureSymbol} - ${futureInfo}), spot=${!!spotQuote} (${company2}/${spotSymbol} - ${spotInfo}), AccountSet: ${accountSet?.name || accountSetId}`);
         return;
       }
 
@@ -181,7 +205,6 @@ class PersistentDataCollectionService {
         this.activeCollections.get(key).lastUpdate = new Date();
       }
 
-      if (DEBUG_ENABLED) logger.info(`📊 Premium calculated: buy=${buyPremium.toFixed(5)}, sell=${sellPremium.toFixed(5)} (${futureQuote.source || 'cache'}/${spotQuote.source || 'cache'})`);
 
     } catch (error) {
       logger.error('Error collecting premium data:', error.message);
@@ -323,11 +346,9 @@ class PersistentDataCollectionService {
 
   // 🚀 ULTRA-FAST: Get quote from database bid/ask table with maximum optimization
   async getQuoteFromBidAskTable(brokerName, symbol) {
-    const startTime = process.hrtime.bigint();
     try {
       const tableName = `bid_ask_${brokerName}`;
       
-      // 🚀 OPTIMIZED: Single query with minimal data transfer
       const results = await sequelize.query(`
         SELECT symbol, bid, ask, timestamp 
         FROM "${tableName}" 
@@ -343,29 +364,18 @@ class PersistentDataCollectionService {
 
       if (results && results.length > 0) {
         const quote = results[0];
-        const endTime = process.hrtime.bigint();
-        const duration = Number(endTime - startTime) / 1_000_000; // Convert to milliseconds
-        
-        if (DEBUG_ENABLED) console.log(`⚡ ULTRA-FAST DB HIT: ${brokerName}/${symbol} in ${duration.toFixed(2)}ms`);
-        
         return {
           bid: parseFloat(quote.bid),
           ask: parseFloat(quote.ask),
           symbol: quote.symbol,
           timestamp: quote.timestamp,
-          source: 'persistent_collection',
-          queryTime: duration
+          source: 'database'
         };
       }
 
-      const endTime = process.hrtime.bigint();
-      const duration = Number(endTime - startTime) / 1_000_000;
-      if (DEBUG_ENABLED) console.log(`📭 No data found: ${brokerName}/${symbol} in ${duration.toFixed(2)}ms`);
       return null;
     } catch (error) {
-      const endTime = process.hrtime.bigint();
-      const duration = Number(endTime - startTime) / 1_000_000;
-      logger.error(`❌ Database quote lookup failed for ${brokerName}/${symbol} in ${duration.toFixed(2)}ms:`, error.message);
+      logger.error(`Database quote lookup failed for ${brokerName}/${symbol}:`, error.message);
       return null;
     }
   }
@@ -453,6 +463,50 @@ class PersistentDataCollectionService {
       clearInterval(this.activeCollections.get(key).interval);
       this.activeCollections.delete(key);
     }
+  }
+
+  broadcastQuoteUpdate(accountSetId, futureSymbol, spotSymbol, futureQuote, spotQuote) {
+    if (!this.wsServer || !this.clientSubscriptions) return;
+
+    const clients = this.clientSubscriptions.get(accountSetId);
+    if (!clients || clients.size === 0) return;
+
+    const message = {
+      type: 'quote_update',
+      data: {
+        futureSymbol,
+        spotSymbol,
+        futureQuote: {
+          ...futureQuote,
+          age: this.getQuoteAgeMs(futureQuote)
+        },
+        spotQuote: {
+          ...spotQuote,
+          age: this.getQuoteAgeMs(spotQuote)
+        }
+      }
+    };
+
+    const messageStr = JSON.stringify(message);
+    
+    clients.forEach(ws => {
+      if (ws.readyState === 1) { // WebSocket.OPEN
+        try {
+          ws.send(messageStr);
+        } catch (error) {
+          // Remove dead connections
+          clients.delete(ws);
+        }
+      } else {
+        // Remove closed connections
+        clients.delete(ws);
+      }
+    });
+  }
+
+  getQuoteAgeMs(quote) {
+    if (!quote || !quote.timestamp) return 0;
+    return Date.now() - new Date(quote.timestamp).getTime();
   }
 
   async shutdown() {

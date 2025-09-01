@@ -138,6 +138,44 @@ const ClosedTrade = sequelize.define('ClosedTrade', {
     comment: 'Combined profit from both brokers'
   },
   
+  // Swap and commission data
+  broker1Swap: {
+    type: DataTypes.DECIMAL(10, 2),
+    allowNull: true,
+    defaultValue: 0,
+    comment: 'Swap charges for broker1 position'
+  },
+  broker2Swap: {
+    type: DataTypes.DECIMAL(10, 2),
+    allowNull: true,
+    defaultValue: 0,
+    comment: 'Swap charges for broker2 position'
+  },
+  broker1Commission: {
+    type: DataTypes.DECIMAL(10, 2),
+    allowNull: true,
+    defaultValue: 0,
+    comment: 'Commission charges for broker1 position'
+  },
+  broker2Commission: {
+    type: DataTypes.DECIMAL(10, 2),
+    allowNull: true,
+    defaultValue: 0,
+    comment: 'Commission charges for broker2 position'
+  },
+  totalSwap: {
+    type: DataTypes.DECIMAL(10, 2),
+    allowNull: true,
+    defaultValue: 0,
+    comment: 'Combined swap charges from both brokers'
+  },
+  totalCommission: {
+    type: DataTypes.DECIMAL(10, 2),
+    allowNull: true,
+    defaultValue: 0,
+    comment: 'Combined commission charges from both brokers'
+  },
+  
   // Trade parameters that were set
   takeProfit: {
     type: DataTypes.DECIMAL(10, 5),

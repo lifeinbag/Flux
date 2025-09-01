@@ -83,7 +83,7 @@ const ApiStatusMonitor = () => {
       console.warn('⚠️ WebSocket not available, falling back to polling');
       setWsConnected(false);
       // Try to reconnect or poll for updates
-      const interval = setInterval(loadApiStatuses, 15000); // Check more frequently
+      const interval = setInterval(loadApiStatuses, process.env.REACT_APP_API_STATUS_MONITOR_INTERVAL || 15000); // Check more frequently
       return () => clearInterval(interval);
     }
   }, []);

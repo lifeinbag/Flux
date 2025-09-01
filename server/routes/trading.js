@@ -868,7 +868,7 @@ router.post('/execute-current', async (req, res) => {
         comment: comment || 'FluxNetwork Trade'
       }),
       new Promise((_, reject) => 
-        setTimeout(() => reject(new Error('Trade execution timeout after 60 seconds')), 60000)
+        setTimeout(() => reject(new Error('Trade execution timeout')), process.env.TRADE_EXECUTION_TIMEOUT || 60000)
       )
     ]);
     
@@ -2146,6 +2146,225 @@ router.post('/symbols/batch', async (req, res) => {
     res.status(500).json({
       success: false,
       message: error.message || 'Failed to fetch batch symbols'
+    });
+  }
+});
+
+// ✅ ENHANCEMENT: Single broker execution endpoint for parallel processing
+router.post('/execute-single-broker', async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const isAdmin = req.user.role === 'admin';
+    
+    const {
+      brokerId,
+      symbol,
+      terminal,
+      direction,
+      volume,
+      takeProfit,
+      takeProfitMode,
+      stopLoss,
+      scalpingMode,
+      comment
+    } = req.body;
+    
+    console.log('🚀 Single broker execution request:', {
+      brokerId,
+      symbol,
+      terminal,
+      direction,
+      volume,
+      userId: req.user.id
+    });
+    
+    // Validate required fields
+    if (!brokerId || !symbol || !direction || !volume) {
+      return res.status(400).json({
+        success: false,
+        message: 'Missing required fields: brokerId, symbol, direction, volume'
+      });
+    }
+    
+    // Find and validate broker access
+    const broker = await findBroker(brokerId, userId, isAdmin);
+    if (!broker) {
+      return res.status(404).json({
+        success: false,
+        message: 'Broker not found or access denied'
+      });
+    }
+    
+    // Get valid token
+    const isMT5 = terminal?.toUpperCase() === 'MT5';
+    const token = await getValidToken(broker, isMT5);
+    
+    // Record latency start time
+    const startTime = Date.now();
+    
+    // Prepare order data
+    const orderData = {
+      symbol,
+      action: direction.toUpperCase() === 'BUY' ? 'buy' : 'sell',
+      lot: parseFloat(volume),
+      takeProfit: takeProfit ? parseFloat(takeProfit) : null,
+      stopLoss: stopLoss ? parseFloat(stopLoss) : null,
+      comment: comment || 'FluxNetwork Single Broker Trade'
+    };
+    
+    console.log(`📤 Sending ${terminal} order request:`, orderData);
+    
+    // Execute order on specific broker
+    const axiosClient = isMT5 ? axiosMT5 : axiosMT4;
+    const response = await axiosClient.post('/order', orderData, {
+      headers: { 
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json'
+      },
+      timeout: 15000 // 15 second timeout for single broker
+    });
+    
+    // Record latency
+    const latency = Date.now() - startTime;
+    await latencyMonitor.recordLatency(brokerId, 'orderSend', latency);
+    
+    console.log(`✅ ${terminal} order executed:`, {
+      brokerId,
+      symbol,
+      ticket: response.data.ticket,
+      latency: `${latency}ms`
+    });
+    
+    // Log execution for monitoring
+    brokerStatusLogger.logExecution(broker.brokerName, 'single_broker_success', {
+      symbol,
+      direction,
+      volume,
+      ticket: response.data.ticket,
+      latency
+    });
+    
+    res.json({
+      success: true,
+      data: {
+        ticket: response.data.ticket,
+        brokerId,
+        symbol,
+        direction,
+        volume,
+        latency,
+        executedAt: new Date().toISOString()
+      },
+      message: `Order executed successfully on ${terminal}`
+    });
+    
+  } catch (error) {
+    console.error('❌ Single broker execution error:', error);
+    
+    // Record failed execution
+    const brokerId = req.body.brokerId;
+    if (brokerId) {
+      try {
+        const broker = await Broker.findByPk(brokerId);
+        if (broker) {
+          brokerStatusLogger.logExecution(broker.brokerName, 'single_broker_error', {
+            error: error.message
+          });
+        }
+      } catch (logError) {
+        console.error('Failed to log execution error:', logError);
+      }
+    }
+    
+    const statusCode = error.response?.status || 500;
+    const errorMessage = error.response?.data?.message || error.message || 'Single broker execution failed';
+    
+    res.status(statusCode).json({
+      success: false,
+      message: errorMessage,
+      brokerId,
+      error: {
+        type: error.name || 'ExecutionError',
+        details: error.response?.data || error.message
+      }
+    });
+  }
+});
+
+// ✅ ENHANCEMENT: Position closing endpoint for rollback mechanism
+router.post('/close-position', async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const isAdmin = req.user.role === 'admin';
+    
+    const { brokerId, ticket, reason } = req.body;
+    
+    console.log('🔄 Position close request:', { brokerId, ticket, reason });
+    
+    if (!brokerId || !ticket) {
+      return res.status(400).json({
+        success: false,
+        message: 'Missing required fields: brokerId, ticket'
+      });
+    }
+    
+    // Find and validate broker access
+    const broker = await findBroker(brokerId, userId, isAdmin);
+    if (!broker) {
+      return res.status(404).json({
+        success: false,
+        message: 'Broker not found or access denied'
+      });
+    }
+    
+    // Get valid token
+    const isMT5 = broker.terminal?.toUpperCase() === 'MT5';
+    const token = await getValidToken(broker, isMT5);
+    
+    // Close position
+    const axiosClient = isMT5 ? axiosMT5 : axiosMT4;
+    const response = await axiosClient.post('/close', {
+      ticket: parseInt(ticket)
+    }, {
+      headers: { 
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json'
+      },
+      timeout: 10000
+    });
+    
+    console.log('✅ Position closed successfully:', { brokerId, ticket, reason });
+    
+    // Log rollback action
+    brokerStatusLogger.logExecution(broker.brokerName, 'position_closed', {
+      ticket,
+      reason: reason || 'Manual close'
+    });
+    
+    res.json({
+      success: true,
+      data: {
+        ticket,
+        brokerId,
+        closedAt: new Date().toISOString(),
+        reason: reason || 'Position closed'
+      },
+      message: 'Position closed successfully'
+    });
+    
+  } catch (error) {
+    console.error('❌ Position close error:', error);
+    
+    const statusCode = error.response?.status || 500;
+    const errorMessage = error.response?.data?.message || error.message || 'Failed to close position';
+    
+    res.status(statusCode).json({
+      success: false,
+      message: errorMessage,
+      error: {
+        type: error.name || 'CloseError',
+        details: error.response?.data || error.message
+      }
     });
   }
 });

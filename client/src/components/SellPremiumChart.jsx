@@ -10,8 +10,8 @@ export default function SellPremiumChart({
   accountSetId,
   currentSet,
   debug = false,
-  daysToFetch = 30,
-  maxPoints = 5000
+  daysToFetch = null,  // null = ALL data
+  maxPoints = null     // null = no limit
 }) {
   // Basic state
   const [candles, setCandles] = useState([]);
@@ -165,14 +165,16 @@ export default function SellPremiumChart({
     setError('');
     
     try {
-      const response = await API.get('/premium-candles', {
-        params: {
-          tf: tf,
-          accountSetId: accountSetId,
-          days: daysToFetch,
-          limit: maxPoints
-        }
-      });
+      const params = {
+        tf: tf,
+        accountSetId: accountSetId
+      };
+      
+      // Only add days and limit if they are specified (not null)
+      if (daysToFetch !== null) params.days = daysToFetch;
+      if (maxPoints !== null) params.limit = maxPoints;
+      
+      const response = await API.get('/premium-candles', { params });
       
       if (response.data?.success && response.data?.data) {
         const candleData = response.data.data
@@ -189,7 +191,7 @@ export default function SellPremiumChart({
             index === 0 || item.time > self[index - 1].time
           );
         
-        console.log(`✅ Loaded ${candleData.length} candles`);
+        console.log(`✅ Loaded ${candleData.length} candles (${tf}m timeframe) - ALL historical data`);
         setCandles(candleData);
         const lastCandle = candleData[candleData.length - 1] || null;
         setLatestCandle(lastCandle);

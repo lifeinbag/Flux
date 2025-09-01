@@ -551,7 +551,19 @@ export default function ActiveTrades() {
           const broker1ApiUrl = broker1.terminal === 'MT4' ? 'https://mt4.premiumprofit.live' : 'https://mt5.premiumprofit.live';
           const broker1CloseUrl = `${broker1ApiUrl}/OrderClose?id=${broker1.externalApiId}&ticket=${trade.broker1Ticket}&lots=${trade.broker1Volume}&price=0&slippage=0`;
           
-          const broker1Response = await fetch(broker1CloseUrl);
+          // Add timeout handling using AbortController
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+          
+          const broker1Response = await fetch(broker1CloseUrl, { 
+            signal: controller.signal 
+          });
+          clearTimeout(timeoutId);
+          
+          if (!broker1Response.ok) {
+            throw new Error(`HTTP ${broker1Response.status}: ${broker1Response.statusText}`);
+          }
+          
           const broker1Data = await broker1Response.json();
           
           closeResults.push({
@@ -561,10 +573,14 @@ export default function ActiveTrades() {
             ticket: trade.broker1Ticket
           });
         } catch (error) {
+          const errorMessage = error.name === 'AbortError' ? 
+            'Connection timeout - Broker API not responding' : 
+            error.message;
+          
           closeResults.push({
             broker: 'Broker 1',
             success: false,
-            error: error.message,
+            error: errorMessage,
             ticket: trade.broker1Ticket
           });
         }
@@ -576,7 +592,19 @@ export default function ActiveTrades() {
           const broker2ApiUrl = broker2.terminal === 'MT4' ? 'https://mt4.premiumprofit.live' : 'https://mt5.premiumprofit.live';
           const broker2CloseUrl = `${broker2ApiUrl}/OrderClose?id=${broker2.externalApiId}&ticket=${trade.broker2Ticket}&lots=${trade.broker2Volume}&price=0&slippage=0`;
           
-          const broker2Response = await fetch(broker2CloseUrl);
+          // Add timeout handling using AbortController
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+          
+          const broker2Response = await fetch(broker2CloseUrl, { 
+            signal: controller.signal 
+          });
+          clearTimeout(timeoutId);
+          
+          if (!broker2Response.ok) {
+            throw new Error(`HTTP ${broker2Response.status}: ${broker2Response.statusText}`);
+          }
+          
           const broker2Data = await broker2Response.json();
           
           closeResults.push({
@@ -586,10 +614,14 @@ export default function ActiveTrades() {
             ticket: trade.broker2Ticket
           });
         } catch (error) {
+          const errorMessage = error.name === 'AbortError' ? 
+            'Connection timeout - Broker API not responding' : 
+            error.message;
+          
           closeResults.push({
             broker: 'Broker 2',
             success: false,
-            error: error.message,
+            error: errorMessage,
             ticket: trade.broker2Ticket
           });
         }

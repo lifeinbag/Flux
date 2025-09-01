@@ -825,11 +825,6 @@
   to { transform: translateX(0); opacity: 1; }
 }
 
-/* Flower Animation Text Pulse */
-@keyframes linkingPulse {
-  0%, 100% { opacity: 0.7; transform: scale(1); }
-  50% { opacity: 1; transform: scale(1.02); }
-}
 
 /* Dollar Rain Welcome Animation */
 @keyframes welcomePulse {

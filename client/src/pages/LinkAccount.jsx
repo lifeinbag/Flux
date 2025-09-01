@@ -3,7 +3,6 @@ import React, { useState, useEffect } from 'react';
 import API from '../services/api';
 import NavBar from '../components/NavBar';
 import { ArrowLeft, Link as LinkIcon, Server, User, Lock, CheckCircle, AlertCircle, Trash2, Plus, Building2, AlertTriangle } from 'lucide-react';
-import FlowerAnimation from '../components/FlowerAnimation';
 import './Dashboard.css';
 
 export default function LinkAccount() {
@@ -218,7 +217,6 @@ const payload = {
   return (
     <>
       <NavBar />
-      <FlowerAnimation show={saving} />
       <div className="modern-dashboard">
         <div className="dashboard-content">
           <div className="dashboard-header">

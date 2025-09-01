@@ -28,7 +28,17 @@
       "Bash(npx sequelize-cli:*)",
       "Bash(kill:*)",
       "Bash(git commit:*)",
-      "Bash(git push:*)"
+      "Bash(git push:*)",
+      "Bash(./kill-port-5000.bat)",
+      "mcp__playwright__browser_take_screenshot",
+      "mcp__playwright__browser_navigate",
+      "mcp__playwright__browser_wait_for",
+      "Read(c:\\Users\\jaish\\OneDrive\\Pictures\\Screenshots/**)",
+      "mcp__playwright__browser_type",
+      "mcp__playwright__browser_click",
+      "mcp__playwright__browser_snapshot",
+      "Read(c:\\Users\\jaish\\OneDrive\\Pictures\\Screenshots/**)",
+      "mcp__playwright__browser_fill_form"
     ],
     "deny": []
   }

@@ -1,7 +1,7 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { fetchSymbols, fetchQuote } from '../services/api';
 import symbolsCache from '../services/symbolsCache';
-import { connectWS, onMessage, subscribeToQuotes } from '../services/wsService';
+import { connectWS, onMessage, subscribeToQuotes, wsManager, createBrokerKey, isQuoteFresh, validateTradeQuotes, onBalanceBatch, onQuoteBatch } from '../services/wsService';
 import { TrendingUp, TrendingDown, Zap, Target, Activity, BarChart3, Search, Settings, AlertTriangle } from 'lucide-react';
 import API from '../services/api';
 import './TradeExecution.css';
@@ -9,10 +9,29 @@ import './TradeExecution.css';
 export default function TradeExecution({
   accountSet: propAccountSet, // Account set from props (if any)
 }) {
+  // ✅ ENHANCEMENT: Trade state management for preventing duplicates and partials
+  const [pendingTrades, setPendingTrades] = useState(new Set());
+  const [executingTrades, setExecutingTrades] = useState(new Set());
+  const executionLocks = useRef(new Set());
+  const executionTimeouts = useRef(new Map());
+  
+  // ✅ ENHANCEMENT: Enhanced execution state with detailed tracking
+  const [executionState, setExecutionState] = useState({
+    isExecuting: false,
+    step: '',
+    startTime: null,
+    broker1Status: 'idle', // idle, pending, success, failed
+    broker2Status: 'idle'
+  });
   const [broker1Symbols, setBroker1Symbols] = useState([]);
   const [broker2Symbols, setBroker2Symbols] = useState([]);
   const [loadingSymbols, setLoadingSymbols] = useState(false);
   const [executing, setExecuting] = useState(false);
+  
+  // ✅ ENHANCEMENT: Update executing state to use new execution state
+  useEffect(() => {
+    setExecuting(executionState.isExecuting);
+  }, [executionState.isExecuting]);
   const [error, setError] = useState('');
   const [selectedBroker1, setSelectedBroker1] = useState('');
   const [selectedBroker2, setSelectedBroker2] = useState('');
@@ -44,6 +63,9 @@ export default function TradeExecution({
   const [spotQuote, setSpotQuote] = useState(null);
   const [buyPremium, setBuyPremium] = useState(0);
   const [sellPremium, setSellPremium] = useState(0);
+  // ✅ FIX 6: Trade validation state
+  const [quotesValidForTrading, setQuotesValidForTrading] = useState(false);
+  const [quotesFreshness, setQuotesFreshness] = useState({ futureValid: false, spotValid: false });
 
   // Removed latency monitoring - not needed
 
@@ -53,6 +75,83 @@ export default function TradeExecution({
   
   // Use prop accountSet if provided, otherwise use selected from state
   const accountSet = propAccountSet || accountSets.find(s => s._id === selectedSetId);
+
+  // ✅ ENHANCEMENT 1: Enhanced Partial Trade Prevention
+  const validateTradeState = useCallback((tradeKey) => {
+    const isNotPending = !pendingTrades.has(tradeKey);
+    const isNotExecuting = !executingTrades.has(tradeKey);
+    const isNotLocked = !executionLocks.current.has(tradeKey);
+    
+    console.log('🔍 Trade state validation:', {
+      tradeKey,
+      isNotPending,
+      isNotExecuting,
+      isNotLocked,
+      canExecute: isNotPending && isNotExecuting && isNotLocked
+    });
+    
+    return isNotPending && isNotExecuting && isNotLocked;
+  }, [pendingTrades, executingTrades]);
+
+  // ✅ ENHANCEMENT 2: Duplicate Execution Prevention
+  const preventDuplicateExecution = useCallback((tradeKey) => {
+    if (executionLocks.current.has(tradeKey)) {
+      console.warn('🚫 Duplicate execution prevented for:', tradeKey);
+      return false;
+    }
+    
+    console.log('🔒 Locking execution for:', tradeKey);
+    executionLocks.current.add(tradeKey);
+    
+    // Auto-release lock after 60 seconds as safety measure
+    setTimeout(() => {
+      if (executionLocks.current.has(tradeKey)) {
+        console.log('⏰ Auto-releasing execution lock for:', tradeKey);
+        executionLocks.current.delete(tradeKey);
+      }
+    }, 60000);
+    
+    return true;
+  }, []);
+
+  // ✅ ENHANCEMENT: Release execution lock
+  const releaseExecutionLock = useCallback((tradeKey) => {
+    console.log('🔓 Releasing execution lock for:', tradeKey);
+    executionLocks.current.delete(tradeKey);
+  }, []);
+
+  // ✅ ENHANCEMENT 3: Timeout Handler for Slow Brokers
+  const createExecutionTimeout = useCallback((tradeKey, timeoutMs = 30000) => {
+    const timeoutId = setTimeout(() => {
+      console.error('⏰ Execution timeout for:', tradeKey);
+      setExecutionState(prev => ({ 
+        ...prev, 
+        isExecuting: false, 
+        step: 'Execution timeout - please check broker connections' 
+      }));
+      
+      // Clean up
+      releaseExecutionLock(tradeKey);
+      setExecutingTrades(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(tradeKey);
+        return newSet;
+      });
+    }, timeoutMs);
+    
+    executionTimeouts.current.set(tradeKey, timeoutId);
+    return timeoutId;
+  }, [releaseExecutionLock]);
+
+  // ✅ ENHANCEMENT: Clear execution timeout
+  const clearExecutionTimeout = useCallback((tradeKey) => {
+    const timeoutId = executionTimeouts.current.get(tradeKey);
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+      executionTimeouts.current.delete(tradeKey);
+      console.log('⏰ Cleared execution timeout for:', tradeKey);
+    }
+  }, []);
 
   // ✅ FIX: Clear stale data when account set changes
   useEffect(() => {
@@ -247,12 +346,192 @@ export default function TradeExecution({
 
   // Removed test latency - not needed
 
-  // ─── Order execution functionality ───
+  // ✅ ENHANCEMENT 4: Enhanced Rollback Mechanism
+  const rollbackExecution = useCallback(async (tradeKey, reason, broker1Result = null, broker2Result = null) => {
+    console.error('🔄 Rolling back execution:', { tradeKey, reason, broker1Result, broker2Result });
+    
+    setExecutionState(prev => ({ 
+      ...prev, 
+      step: `Rolling back: ${reason}`,
+      broker1Status: broker1Result ? 'rollback' : prev.broker1Status,
+      broker2Status: broker2Result ? 'rollback' : prev.broker2Status
+    }));
+    
+    // Attempt to close any successfully opened positions
+    const rollbackPromises = [];
+    
+    if (broker1Result?.success && broker1Result?.ticket) {
+      rollbackPromises.push(
+        API.post('/trading/close-position', {
+          brokerId: broker1Id,
+          ticket: broker1Result.ticket,
+          reason: `Rollback: ${reason}`
+        }).catch(err => {
+          console.error('❌ Failed to rollback broker1 position:', err);
+          return { success: false, error: err.message };
+        })
+      );
+    }
+    
+    if (broker2Result?.success && broker2Result?.ticket) {
+      rollbackPromises.push(
+        API.post('/trading/close-position', {
+          brokerId: broker2Id,
+          ticket: broker2Result.ticket,
+          reason: `Rollback: ${reason}`
+        }).catch(err => {
+          console.error('❌ Failed to rollback broker2 position:', err);
+          return { success: false, error: err.message };
+        })
+      );
+    }
+    
+    if (rollbackPromises.length > 0) {
+      try {
+        const rollbackResults = await Promise.allSettled(rollbackPromises);
+        console.log('🔄 Rollback results:', rollbackResults);
+      } catch (rollbackError) {
+        console.error('❌ Rollback failed:', rollbackError);
+      }
+    }
+    
+    // Clean up state
+    releaseExecutionLock(tradeKey);
+    clearExecutionTimeout(tradeKey);
+    setExecutingTrades(prev => {
+      const newSet = new Set(prev);
+      newSet.delete(tradeKey);
+      return newSet;
+    });
+  }, [broker1Id, broker2Id, releaseExecutionLock, clearExecutionTimeout]);
+
+  // ✅ ENHANCEMENT 3: Faster Simultaneous Execution with Parallel Promises
+  const executeParallelOrders = useCallback(async (orderData) => {
+    const tradeKey = `${selectedBroker1}_${selectedBroker2}_${Date.now()}`;
+    
+    console.log('🚀 Starting parallel execution:', { tradeKey, orderData });
+    
+    setExecutionState(prev => ({
+      ...prev,
+      step: 'Preparing parallel execution...',
+      broker1Status: 'pending',
+      broker2Status: 'pending'
+    }));
+    
+    // Create execution timeout
+    createExecutionTimeout(tradeKey, 30000); // 30 second timeout
+    
+    try {
+      // ✅ ENHANCEMENT: Prepare both broker orders simultaneously
+      const broker1OrderData = {
+        ...orderData,
+        brokerId: broker1Id,
+        symbol: selectedBroker1,
+        terminal: broker1Terminal
+      };
+      
+      const broker2OrderData = {
+        ...orderData,
+        brokerId: broker2Id,
+        symbol: selectedBroker2,
+        terminal: broker2Terminal
+      };
+      
+      setExecutionState(prev => ({ ...prev, step: 'Executing both brokers simultaneously...' }));
+      
+      // ✅ ENHANCEMENT: Execute both orders in parallel with timeout handling
+      const executionPromises = [
+        Promise.race([
+          API.post('/trading/execute-single-broker', broker1OrderData),
+          new Promise((_, reject) => 
+            setTimeout(() => reject(new Error('Broker1 execution timeout')), 15000)
+          )
+        ]),
+        Promise.race([
+          API.post('/trading/execute-single-broker', broker2OrderData),
+          new Promise((_, reject) => 
+            setTimeout(() => reject(new Error('Broker2 execution timeout')), 15000)
+          )
+        ])
+      ];
+      
+      // Wait for both executions to complete
+      const results = await Promise.allSettled(executionPromises);
+      const [broker1Result, broker2Result] = results;
+      
+      console.log('🏁 Parallel execution results:', { broker1Result, broker2Result });
+      
+      // Analyze results
+      const broker1Success = broker1Result.status === 'fulfilled' && broker1Result.value?.data?.success;
+      const broker2Success = broker2Result.status === 'fulfilled' && broker2Result.value?.data?.success;
+      
+      setExecutionState(prev => ({
+        ...prev,
+        broker1Status: broker1Success ? 'success' : 'failed',
+        broker2Status: broker2Success ? 'success' : 'failed'
+      }));
+      
+      // Check for partial execution
+      if (broker1Success && broker2Success) {
+        // ✅ PERFECT: Both trades executed successfully
+        console.log('✅ Perfect execution: Both brokers successful!');
+        setExecutionState(prev => ({ ...prev, step: 'Both trades executed successfully!' }));
+        
+        clearExecutionTimeout(tradeKey);
+        releaseExecutionLock(tradeKey);
+        
+        return { success: true, message: 'Trade executed successfully on both brokers!' };
+        
+      } else if (broker1Success || broker2Success) {
+        // ❌ PARTIAL EXECUTION: Roll back the successful one
+        const successfulBroker = broker1Success ? 'Broker1' : 'Broker2';
+        const failedBroker = broker1Success ? 'Broker2' : 'Broker1';
+        
+        console.error('⚠️ Partial execution detected:', { successfulBroker, failedBroker });
+        
+        setExecutionState(prev => ({ 
+          ...prev, 
+          step: `Partial execution detected - rolling back ${successfulBroker}...` 
+        }));
+        
+        // Rollback the successful execution
+        await rollbackExecution(
+          tradeKey, 
+          `${failedBroker} execution failed`, 
+          broker1Success ? broker1Result.value?.data : null,
+          broker2Success ? broker2Result.value?.data : null
+        );
+        
+        const failedError = broker1Success ? 
+          broker2Result.reason?.message || 'Broker2 execution failed' :
+          broker1Result.reason?.message || 'Broker1 execution failed';
+        
+        throw new Error(`Partial execution prevented - ${failedBroker} failed: ${failedError}`);
+        
+      } else {
+        // ❌ BOTH FAILED: No rollback needed
+        console.error('❌ Both brokers failed to execute');
+        
+        const broker1Error = broker1Result.reason?.message || 'Unknown error';
+        const broker2Error = broker2Result.reason?.message || 'Unknown error';
+        
+        throw new Error(`Both brokers failed - Broker1: ${broker1Error}, Broker2: ${broker2Error}`);
+      }
+      
+    } catch (error) {
+      console.error('❌ Parallel execution error:', error);
+      clearExecutionTimeout(tradeKey);
+      releaseExecutionLock(tradeKey);
+      throw error;
+    }
+  }, [selectedBroker1, selectedBroker2, broker1Id, broker2Id, broker1Terminal, broker2Terminal, createExecutionTimeout, clearExecutionTimeout, releaseExecutionLock, rollbackExecution]);
+
+  // ─── ENHANCED Order execution functionality ───
   const executeOrder = useCallback(async (orderType) => {
     // Clear any previous errors
     setError('');
     
-    // Validation
+    // Basic validation
     if (!selectedBroker1 || !selectedBroker2 || !volume) {
       setError('Please select symbols and enter volume');
       return;
@@ -262,29 +541,56 @@ export default function TradeExecution({
       setError('Please select an account set');
       return;
     }
+    
+    // ✅ ENHANCEMENT 1 & 2: Validate trade state and prevent duplicates
+    const tradeKey = `${accountSet.id || accountSet._id}_${selectedBroker1}_${selectedBroker2}_${orderType}`;
+    
+    if (!validateTradeState(tradeKey)) {
+      setError('Trade is already being processed or is in pending state');
+      return;
+    }
+    
+    if (!preventDuplicateExecution(tradeKey)) {
+      setError('Duplicate execution prevented - please wait for current trade to complete');
+      return;
+    }
 
-    // Set executing state immediately
-    setExecuting(true);
+    // ✅ ENHANCEMENT: Set comprehensive execution state
+    setExecutionState({
+      isExecuting: true,
+      step: 'Initializing execution...',
+      startTime: Date.now(),
+      broker1Status: 'idle',
+      broker2Status: 'idle'
+    });
+    
+    // Add to executing trades set
+    setExecutingTrades(prev => new Set([...prev, tradeKey]));
     
     try {
-      console.log('🚀 Executing order:', {
+      console.log('🚀 Enhanced order execution started:', {
         orderType,
+        tradeKey,
         accountSetId: accountSet.id || accountSet._id,
         direction,
         volume: parseFloat(volume),
         selectedBroker1,
-        selectedBroker2
+        selectedBroker2,
+        quotesValidForTrading
       });
+
+      // ✅ ENHANCEMENT 6: Enhanced quote validation for current orders
+      if (orderType === 'current' && !quotesValidForTrading) {
+        throw new Error('Quotes are too stale for safe execution. Please wait for fresh quotes.');
+      }
 
       // Calculate take profit based on mode
       let takeProfitValue = null;
       if (takeProfitMode === 'None' || !takeProfit) {
         takeProfitValue = null;
       } else if (takeProfitMode === 'Premium') {
-        // For premium mode, store as premium value
         takeProfitValue = parseFloat(takeProfit);
       } else if (takeProfitMode === 'Amount') {
-        // For amount mode, store as dollar amount
         takeProfitValue = parseFloat(takeProfit);
       }
 
@@ -293,53 +599,86 @@ export default function TradeExecution({
         direction,
         volume: parseFloat(volume),
         takeProfit: takeProfitValue,
-        takeProfitMode, // Send the mode to server
+        takeProfitMode,
         stopLoss: null,
         scalpingMode: scalping,
         comment: 'FluxNetwork Trade'
       };
 
-      let response;
+      let result;
       let successMessage;
 
       if (orderType === 'current') {
-        console.log('📤 Sending execute-current request...');
-        response = await API.post('/trading/execute-current', orderData);
-        successMessage = 'Trade executed successfully at current premium!';
+        // ✅ ENHANCEMENT 3: Use new parallel execution for current orders
+        setExecutionState(prev => ({ ...prev, step: 'Executing at current premium with parallel processing...' }));
+        result = await executeParallelOrders(orderData);
+        successMessage = 'Trade executed successfully at current premium on both brokers!';
       } else if (orderType === 'target') {
         if (!targetPremium) {
           throw new Error('Please enter target premium');
         }
         
         orderData.targetPremium = parseFloat(targetPremium);
-        console.log('📤 Sending execute-target request...');
-        response = await API.post('/trading/execute-target', orderData);
+        setExecutionState(prev => ({ ...prev, step: 'Creating pending order at target premium...' }));
+        
+        // For target orders, use existing endpoint (typically creates pending orders)
+        const response = await API.post('/trading/execute-target', orderData);
+        result = { success: response.data?.success, data: response.data };
         successMessage = 'Pending order created successfully!';
       }
       
-      console.log('✅ Order execution response:', response.data);
+      console.log('✅ Enhanced execution completed:', result);
       
-      // Clear form on success
-      setVolume('');
-      setTargetPremium('');
-      setTakeProfit('');
-      
-      // Show success message
-      alert(successMessage);
-      
-      // If it's a current trade execution and successful, suggest user check active trades
-      if (orderType === 'current' && response.data?.success) {
-        console.log('✅ Trade created, should now appear in active trades');
+      if (result.success) {
+        // Clear form on success
+        setVolume('');
+        setTargetPremium('');
+        setTakeProfit('');
+        
+        // Show success message
+        setExecutionState(prev => ({ ...prev, step: successMessage }));
+        
+        // Success notification
+        setTimeout(() => {
+          alert(successMessage);
+        }, 500);
+        
+        console.log('✅ Trade execution completed successfully');
+      } else {
+        throw new Error(result.message || 'Execution failed');
       }
       
     } catch (err) {
-      console.error('❌ Order execution error:', err);
+      console.error('❌ Enhanced order execution error:', err);
       const errorMessage = err.response?.data?.message || err.message || 'Order execution failed';
       setError(errorMessage);
       
+      setExecutionState(prev => ({
+        ...prev,
+        step: `Error: ${errorMessage}`,
+        broker1Status: 'failed',
+        broker2Status: 'failed'
+      }));
+      
     } finally {
-      // Always turn off executing, regardless of success or failure
-      setExecuting(false);
+      // Always clean up execution state
+      setTimeout(() => {
+        setExecutionState({
+          isExecuting: false,
+          step: '',
+          startTime: null,
+          broker1Status: 'idle',
+          broker2Status: 'idle'
+        });
+      }, 3000); // Keep status visible for 3 seconds
+      
+      // Clean up execution tracking
+      releaseExecutionLock(tradeKey);
+      setExecutingTrades(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(tradeKey);
+        return newSet;
+      });
       
       // Refresh latency data after order execution
       try {
@@ -348,7 +687,7 @@ export default function TradeExecution({
         console.log('Failed to refresh latency after order:', latencyErr.message);
       }
     }
-  }, [selectedBroker1, selectedBroker2, volume, direction, targetPremium, takeProfit, scalping, accountSet, fetchLatencyData]);
+  }, [selectedBroker1, selectedBroker2, volume, direction, targetPremium, takeProfit, takeProfitMode, scalping, accountSet, quotesValidForTrading, validateTradeState, preventDuplicateExecution, executeParallelOrders, releaseExecutionLock, fetchLatencyData]);
 
   // ✅ OPTIMIZED: Fetch quotes using batch API for better performance
   const fetchQuotes = useCallback(async () => {
@@ -417,14 +756,59 @@ export default function TradeExecution({
     }
 
     // This handler will be called by the wsService when a new quote arrives
+    // ✅ FIX 3 & FIX 6: Enhanced quote handler with freshness validation
     const handleQuoteUpdate = (data) => {
       // Check if the update is for the symbols we are currently watching
       if (data.futureSymbol === selectedBroker1 && data.futureQuote) {
+        // ✅ FIX 3: Validate quote freshness
+        const futureValid = isQuoteFresh(data.futureQuote);
         setFutureQuote(data.futureQuote);
+        setQuotesFreshness(prev => ({ ...prev, futureValid }));
+        
+        if (!futureValid) {
+          console.warn('⚠️ TradeExecution: Received stale future quote:', {
+            symbol: data.futureSymbol,
+            age: data.futureQuote ? Date.now() - new Date(data.futureQuote.timestamp) : 'no quote'
+          });
+        }
       }
       if (data.spotSymbol === selectedBroker2 && data.spotQuote) {
+        // ✅ FIX 3: Validate quote freshness
+        const spotValid = isQuoteFresh(data.spotQuote);
         setSpotQuote(data.spotQuote);
+        setQuotesFreshness(prev => ({ ...prev, spotValid }));
+        
+        if (!spotValid) {
+          console.warn('⚠️ TradeExecution: Received stale spot quote:', {
+            symbol: data.spotSymbol,
+            age: data.spotQuote ? Date.now() - new Date(data.spotQuote.timestamp) : 'no quote'
+          });
+        }
       }
+    };
+
+    // ✅ FIX 7: Enhanced batch quote handler
+    const handleQuoteBatch = (quoteUpdates) => {
+      console.log('📈 TradeExecution: Processing batched quote updates:', Object.keys(quoteUpdates).length);
+      
+      Object.values(quoteUpdates).forEach(data => {
+        handleQuoteUpdate(data);
+      });
+    };
+
+    // ✅ FIX 2: Universal handlers for TradeExecution
+    const handleConnectionConfirmed = (data) => {
+      console.log('✅ TradeExecution: WebSocket connection confirmed:', data);
+    };
+
+    const handleSubscriptionConfirmed = (data) => {
+      console.log('✅ TradeExecution: Subscription confirmed:', data);
+    };
+
+    const handleApiError = (data) => {
+      console.error('🚨 TradeExecution: API Error received:', data);
+      setError(`API Error: ${data.message || 'Unknown error'}`);
+      setTimeout(() => setError(''), 5000);
     };
 
     // ✅ FIX: Only connect and subscribe if symbols are locked
@@ -442,12 +826,22 @@ export default function TradeExecution({
       });
     }
 
-    // The 'onMessage' function returns an unsubscribe function for cleanup
-    const unsubscribe = onMessage('quote_update', handleQuoteUpdate);
+    // ✅ FIX 2: Register universal handlers
+    const unsubQuote = onMessage('quote_update', handleQuoteUpdate);
+    const unsubConnection = onMessage('connection', handleConnectionConfirmed);
+    const unsubSubscription = onMessage('subscription_confirmed', handleSubscriptionConfirmed);
+    const unsubApiError = onMessage('api_error', handleApiError);
+    
+    // ✅ FIX 7: Register batch handlers
+    const unsubQuoteBatch = onQuoteBatch(handleQuoteBatch);
 
     // This cleanup function will be called when the component unmounts or dependencies change
     return () => {
-      unsubscribe();
+      unsubQuote();
+      unsubConnection();
+      unsubSubscription();
+      unsubApiError();
+      unsubQuoteBatch();
     };
   }, [selectedBroker1, selectedBroker2, accountSet?._id, accountSet?.symbolsLocked]);
 
@@ -511,6 +905,42 @@ export default function TradeExecution({
     };
   }, [accountSet?._id, accountSet?.name]);
 
+  // ✅ FIX 3 & FIX 6: Enhanced premium calculation with freshness validation
+  useEffect(() => {
+    if (futureQuote && spotQuote) {
+      // ✅ FIX 3: Validate quote freshness before calculating premiums
+      const futureValid = isQuoteFresh(futureQuote);
+      const spotValid = isQuoteFresh(spotQuote);
+      
+      if (futureValid && spotValid) {
+        const calculatedBuyPremium = (futureQuote.ask || 0) - (spotQuote.bid || 0);
+        const calculatedSellPremium = (futureQuote.bid || 0) - (spotQuote.ask || 0);
+        
+        setBuyPremium(calculatedBuyPremium);
+        setSellPremium(calculatedSellPremium);
+        
+        // ✅ FIX 6: Validate quotes for trading
+        const validForTrading = validateTradeQuotes(futureQuote, spotQuote);
+        setQuotesValidForTrading(validForTrading);
+        
+        console.log('📈 Premium calculated:', {
+          buyPremium: calculatedBuyPremium.toFixed(4),
+          sellPremium: calculatedSellPremium.toFixed(4),
+          validForTrading,
+          futureQuote: { bid: futureQuote.bid, ask: futureQuote.ask },
+          spotQuote: { bid: spotQuote.bid, ask: spotQuote.ask }
+        });
+      } else {
+        console.warn('⚠️ Cannot calculate premium - stale quotes:', { futureValid, spotValid });
+        setQuotesValidForTrading(false);
+      }
+    } else {
+      setBuyPremium(0);
+      setSellPremium(0);
+      setQuotesValidForTrading(false);
+    }
+  }, [futureQuote, spotQuote]);
+
   const onBroker1Change = async (e) => {
     const v = e.target.value;
     setSelectedBroker1(v);
@@ -529,6 +959,27 @@ export default function TradeExecution({
     const v = e.target.value;
     setSelectedBroker2(v);
     await handleSmartSymbolRefresh(v, broker2Symbols, broker2Id, broker2Terminal);
+  };
+
+  // ✅ ENHANCEMENT: Helper functions for status display
+  const getBrokerStatusColor = (status) => {
+    switch (status) {
+      case 'success': return '#10b981'; // green
+      case 'failed': return '#ef4444'; // red
+      case 'pending': return '#f59e0b'; // yellow/orange
+      case 'rollback': return '#8b5cf6'; // purple
+      default: return '#6b7280'; // gray
+    }
+  };
+
+  const getStatusIcon = (status) => {
+    switch (status) {
+      case 'success': return '✅';
+      case 'failed': return '❌';
+      case 'pending': return '⏳';
+      case 'rollback': return '🔄';
+      default: return '⏸️';
+    }
   };
 
   return (
@@ -560,12 +1011,24 @@ export default function TradeExecution({
               {loadingSymbols ? '...' : `${broker2Symbols.length} symbols`}
             </div>
           </div>
+          {/* ✅ FIX 3 & FIX 6: Enhanced premium display with freshness indicators */}
           <div className="status-item premium-spread">
-            <div className="status-indicator online"></div>
-            <span>Premium Spread</span>
+            <div className={`status-indicator ${quotesValidForTrading ? 'online' : 'offline'}`}></div>
+            <span>
+              Premium Spread
+              {quotesValidForTrading ? (
+                <span style={{ color: '#4ade80', marginLeft: '4px', fontSize: '10px' }}>✅</span>
+              ) : (
+                <span style={{ color: '#f87171', marginLeft: '4px', fontSize: '10px' }}>⚠️</span>
+              )}
+            </span>
             <div className="spread-values">
-              <div style={{ color: '#4ade80' }}>Buy: {buyPremium.toFixed(2)}</div>
-              <div style={{ color: '#f87171' }}>Sell: {sellPremium.toFixed(2)}</div>
+              <div style={{ color: quotesValidForTrading ? '#4ade80' : '#9ca3af' }}>
+                Buy: {buyPremium.toFixed(2)}
+              </div>
+              <div style={{ color: quotesValidForTrading ? '#f87171' : '#9ca3af' }}>
+                Sell: {sellPremium.toFixed(2)}
+              </div>
             </div>
           </div>
         </div>
@@ -801,22 +1264,54 @@ export default function TradeExecution({
             <h2>Trade Actions</h2>
           </div>
           <div className="action-buttons">
+            {/* ✅ FIX 6: Enhanced execute button with trade validation */}
             <button 
               className="action-btn current-premium"
               onClick={() => executeOrder('current')}
-              disabled={executing || loadingSymbols || !selectedBroker1 || !selectedBroker2 || !volume || !accountSet}
-              title={!accountSet ? 'Please select an account set first' : (!selectedBroker1 || !selectedBroker2) ? 'Please select symbols for both brokers' : !volume ? 'Please enter volume' : 'Execute trade at current premium'}
+              disabled={executionState.isExecuting || loadingSymbols || !selectedBroker1 || !selectedBroker2 || !volume || !accountSet || !quotesValidForTrading}
+              title={
+                !accountSet ? 'Please select an account set first' : 
+                (!selectedBroker1 || !selectedBroker2) ? 'Please select symbols for both brokers' : 
+                !volume ? 'Please enter volume' : 
+                !quotesValidForTrading ? '⚠️ Quotes too stale for trading - please wait for fresh quotes' :
+                'Execute trade at current premium'
+              }
             >
-              <div className="btn-content">{executing ? 'Executing...' : 'Execute at Current Premium'}</div>
+              <div className="btn-content">
+                {executionState.isExecuting ? (
+                  <span>
+                    {executionState.step || 'Executing...'}
+                    <div style={{fontSize: '10px', marginTop: '2px', opacity: 0.8}}>
+                      B1: {executionState.broker1Status} | B2: {executionState.broker2Status}
+                    </div>
+                  </span>
+                ) : 'Execute at Current Premium'}
+              </div>
               <div className="btn-glow"></div>
             </button>
+            {/* ✅ FIX 6: Enhanced target premium button with validation */}
             <button 
               className="action-btn target-premium"
               onClick={() => executeOrder('target')}
-              disabled={executing || loadingSymbols || !selectedBroker1 || !selectedBroker2 || !volume || !targetPremium || !accountSet}
-              title={!accountSet ? 'Please select an account set first' : (!selectedBroker1 || !selectedBroker2) ? 'Please select symbols for both brokers' : !volume ? 'Please enter volume' : !targetPremium ? 'Please enter target premium' : 'Create pending order at target premium'}
+              disabled={executionState.isExecuting || loadingSymbols || !selectedBroker1 || !selectedBroker2 || !volume || !targetPremium || !accountSet}
+              title={
+                !accountSet ? 'Please select an account set first' : 
+                (!selectedBroker1 || !selectedBroker2) ? 'Please select symbols for both brokers' : 
+                !volume ? 'Please enter volume' : 
+                !targetPremium ? 'Please enter target premium' : 
+                'Create pending order at target premium'
+              }
             >
-              <div className="btn-content">{executing ? 'Creating Order...' : 'Execute at Target Premium'}</div>
+              <div className="btn-content">
+                {executionState.isExecuting ? (
+                  <span>
+                    {executionState.step || 'Creating Order...'}
+                    <div style={{fontSize: '10px', marginTop: '2px', opacity: 0.8}}>
+                      B1: {executionState.broker1Status} | B2: {executionState.broker2Status}
+                    </div>
+                  </span>
+                ) : 'Execute at Target Premium'}
+              </div>
               <div className="btn-glow"></div>
             </button>
           </div>
@@ -870,6 +1365,13 @@ export default function TradeExecution({
           0% { transform: rotate(0deg); }
           100% { transform: rotate(360deg); }
         }
+        .execution-status-panel {
+          animation: pulseGlow 2s ease-in-out infinite alternate;
+        }
+        @keyframes pulseGlow {
+          from { box-shadow: 0 0 5px rgba(59, 130, 246, 0.5); }
+          to { box-shadow: 0 0 20px rgba(59, 130, 246, 0.8); }
+        }
         .status-indicator.loading {
           background-color: #fbbf24 !important;
           animation: pulse 1.5s ease-in-out infinite;
@@ -887,6 +1389,91 @@ export default function TradeExecution({
         <div className="error-container">
           <div className="error-icon">⚠️</div>
           <div className="error-text">{error}</div>
+        </div>
+      )}
+
+      {/* ✅ ENHANCEMENT: Execution Status Panel */}
+      {executionState.isExecuting && (
+        <div className="trading-panel execution-status-panel" style={{ marginTop: '20px', border: '2px solid #3b82f6', background: 'linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%)' }}>
+          <div className="panel-header">
+            <Activity style={{ width: '20px', height: '20px', color: '#3b82f6' }} />
+            <h2 style={{ color: '#3b82f6' }}>Live Execution Status</h2>
+          </div>
+          <div className="execution-progress" style={{ padding: '20px' }}>
+            <div className="execution-step" style={{ 
+              fontSize: '16px', 
+              fontWeight: 'bold', 
+              color: '#1e40af',
+              marginBottom: '15px',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '10px'
+            }}>
+              <div className="progress-spinner" style={{
+                width: '20px',
+                height: '20px',
+                border: '2px solid #e5e7eb',
+                borderTop: '2px solid #3b82f6',
+                borderRadius: '50%',
+                animation: 'spin 1s linear infinite'
+              }}></div>
+              {executionState.step}
+            </div>
+            
+            <div className="broker-status-grid" style={{ 
+              display: 'grid', 
+              gridTemplateColumns: '1fr 1fr', 
+              gap: '15px', 
+              marginTop: '15px' 
+            }}>
+              <div className="broker-status-card" style={{
+                padding: '12px',
+                border: `2px solid ${getBrokerStatusColor(executionState.broker1Status)}`,
+                borderRadius: '8px',
+                backgroundColor: 'white',
+                textAlign: 'center'
+              }}>
+                <div style={{ fontSize: '12px', color: '#6b7280', marginBottom: '5px' }}>BROKER 1 ({broker1Terminal})</div>
+                <div style={{ 
+                  fontSize: '14px', 
+                  fontWeight: 'bold', 
+                  color: getBrokerStatusColor(executionState.broker1Status),
+                  textTransform: 'uppercase'
+                }}>
+                  {getStatusIcon(executionState.broker1Status)} {executionState.broker1Status}
+                </div>
+              </div>
+              
+              <div className="broker-status-card" style={{
+                padding: '12px',
+                border: `2px solid ${getBrokerStatusColor(executionState.broker2Status)}`,
+                borderRadius: '8px',
+                backgroundColor: 'white',
+                textAlign: 'center'
+              }}>
+                <div style={{ fontSize: '12px', color: '#6b7280', marginBottom: '5px' }}>BROKER 2 ({broker2Terminal})</div>
+                <div style={{ 
+                  fontSize: '14px', 
+                  fontWeight: 'bold', 
+                  color: getBrokerStatusColor(executionState.broker2Status),
+                  textTransform: 'uppercase'
+                }}>
+                  {getStatusIcon(executionState.broker2Status)} {executionState.broker2Status}
+                </div>
+              </div>
+            </div>
+            
+            {executionState.startTime && (
+              <div style={{ 
+                marginTop: '15px', 
+                fontSize: '12px', 
+                color: '#6b7280', 
+                textAlign: 'center' 
+              }}>
+                Execution Time: {Math.floor((Date.now() - executionState.startTime) / 1000)}s
+              </div>
+            )}
+          </div>
         </div>
       )}
 

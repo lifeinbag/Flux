@@ -241,8 +241,8 @@ export default function ClosedTrades() {
                         <td style={{...tableCellStyle, color: '#f44336'}}>
                           {((parseFloat(trade.executionPremium) || 0) - (parseFloat(trade.closePremium) || 0)).toFixed(2)}
                         </td>
-                        <td style={tableCellStyle}>$0.00</td>
-                        <td style={tableCellStyle}>$0.00</td>
+                        <td style={tableCellStyle}>${(parseFloat(trade.totalSwap) || 0).toFixed(2)}</td>
+                        <td style={tableCellStyle}>${(parseFloat(trade.totalCommission) || 0).toFixed(2)}</td>
                         <td style={{...tableCellStyle, color: profitColor, fontWeight: 'bold', fontSize: '1rem'}}>
                           ${profit.toFixed(2)}
                         </td>

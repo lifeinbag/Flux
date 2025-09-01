@@ -236,13 +236,10 @@ class TradingService {
         throw new Error('Invalid quotes received from unified quote service');
       }
 
-      // Calculate current premium based on direction
-      let currentPremium;
-      if (direction === 'Buy') {
-        currentPremium = (futureQuote.ask || 0) - (spotQuote.bid || 0);
-      } else {
-        currentPremium = (futureQuote.bid || 0) - (spotQuote.ask || 0);
-      }
+      // Calculate opening premium: broker1 open price - broker2 open price
+      const broker1OpenPrice = direction === 'Buy' ? futureQuote.ask : futureQuote.bid;
+      const broker2OpenPrice = this.getReverseDirection(direction) === 'Buy' ? spotQuote.ask : spotQuote.bid;
+      const currentPremium = broker1OpenPrice - broker2OpenPrice;
 
       logger.info(`📊 Execution Premium: ${currentPremium} (Direction: ${direction})`);
 
@@ -436,9 +433,32 @@ class TradingService {
       const closeResults = [broker1Result, broker2Result];
       const successCount = closeResults.filter(r => r.success).length;
       
-      logger.info(`✅ Closed ${successCount}/2 positions successfully`);
+      logger.info(`📊 OrderClose API responses - Broker1: ${broker1Result.success}, Broker2: ${broker2Result.success}`);
+      
+      // 🚨 CRITICAL: Verify trades are ACTUALLY closed by checking positions on terminal
+      if (successCount === 2) {
+        logger.info(`🔍 Verifying trades are actually closed on terminals...`);
+        
+        // Check if positions still exist on terminals
+        const [broker1Positions, broker2Positions] = await Promise.all([
+          this.getOpenPositions(activeTrade.broker1),
+          this.getOpenPositions(activeTrade.broker2)
+        ]);
+        
+        const broker1StillOpen = broker1Positions.find(pos => pos.ticket?.toString() === activeTrade.broker1Ticket);
+        const broker2StillOpen = broker2Positions.find(pos => pos.ticket?.toString() === activeTrade.broker2Ticket);
+        
+        if (broker1StillOpen || broker2StillOpen) {
+          logger.error(`🚨 CRITICAL: OrderClose API returned success but trades still open on terminal!`);
+          logger.error(`Broker1 still open: ${!!broker1StillOpen}, Broker2 still open: ${!!broker2StillOpen}`);
+          logger.error(`Trade ${tradeId} NOT moved to closed trades due to verification failure`);
+          throw new Error('Trade closure verification failed - positions still open on terminals');
+        }
+        
+        logger.info(`✅ Trade closure verified - positions confirmed closed on both terminals`);
+      }
 
-      // ✅ FIX: Get quotes using unified service for consistency
+      // ✅ FIX: Get quotes using unified service for consistency with fallback
       logger.info(`🎯 Trade Closure: Getting quotes via UnifiedQuoteService for ${activeTrade.broker1Symbol}/${activeTrade.broker2Symbol}`);
       const quotes = await unifiedQuoteService.getQuotes(
         activeTrade.broker1, activeTrade.broker1Symbol,
@@ -452,13 +472,29 @@ class TradingService {
         [futureQuote, spotQuote] = quotes;
       }
 
+      // ✅ SIMPLE FIX: Closing Premium = broker1 close price - broker2 close price
       let closePremium = 0;
-      if (futureQuote && spotQuote) {
-        if (activeTrade.broker1Direction === 'Buy') {
-          closePremium = (futureQuote.bid || 0) - (spotQuote.ask || 0);
-        } else {
-          closePremium = (futureQuote.ask || 0) - (spotQuote.bid || 0);
-        }
+      
+      // Get broker1 and broker2 close prices from the close order responses
+      let broker1ClosePrice = null;
+      let broker2ClosePrice = null;
+      
+      // Extract close prices from API responses  
+      if (closeResults[0]?.closePrice) {
+        broker1ClosePrice = parseFloat(closeResults[0].closePrice);
+      }
+      if (closeResults[1]?.closePrice) {
+        broker2ClosePrice = parseFloat(closeResults[1].closePrice);
+      }
+      
+      // Calculate closing premium: broker1 close price - broker2 close price
+      if (broker1ClosePrice && broker2ClosePrice) {
+        closePremium = broker1ClosePrice - broker2ClosePrice;
+        logger.info(`✅ Closing premium calculated: ${broker1ClosePrice} - ${broker2ClosePrice} = ${closePremium.toFixed(5)}`);
+      } else {
+        // Fallback to execution premium if close prices unavailable
+        closePremium = parseFloat(activeTrade.executionPremium) || 0;
+        logger.warn(`⚠️ Close prices unavailable, using execution premium: ${closePremium.toFixed(5)}`);
       }
 
       // Calculate trade duration
@@ -466,7 +502,12 @@ class TradingService {
         (Date.now() - new Date(activeTrade.createdAt).getTime()) / (1000 * 60)
       );
 
-      // ✅ FIX: Create closed trade record within transaction
+      // ✅ FIX: Create closed trade record within transaction with swap/commission data
+      const broker1Swap = closeResults[0]?.swap || 0;
+      const broker2Swap = closeResults[1]?.swap || 0;
+      const broker1Commission = closeResults[0]?.commission || 0;
+      const broker2Commission = closeResults[1]?.commission || 0;
+      
       const closedTrade = await ClosedTrade.create({
         tradeId: activeTrade.tradeId,
         accountSetId: activeTrade.accountSetId,
@@ -482,6 +523,8 @@ class TradingService {
         broker1CloseTime: new Date(),
         broker1OpenTime: activeTrade.broker1OpenTime,
         broker1Profit: closeResults[0].profit || 0,
+        broker1Swap,
+        broker1Commission,
         
         broker2Id: activeTrade.broker2Id,
         broker2Ticket: activeTrade.broker2Ticket,
@@ -493,10 +536,14 @@ class TradingService {
         broker2CloseTime: new Date(),
         broker2OpenTime: activeTrade.broker2OpenTime,
         broker2Profit: closeResults[1].profit || 0,
+        broker2Swap,
+        broker2Commission,
         
         executionPremium: activeTrade.executionPremium,
         closePremium,
         totalProfit: (closeResults[0].profit || 0) + (closeResults[1].profit || 0),
+        totalSwap: broker1Swap + broker2Swap,
+        totalCommission: broker1Commission + broker2Commission,
         takeProfit: activeTrade.takeProfit,
         takeProfitMode: activeTrade.takeProfitMode || 'None',
         stopLoss: activeTrade.stopLoss,
@@ -545,18 +592,169 @@ class TradingService {
         params: { id: token, ticket }
       });
 
+      // ✅ ENHANCED: Comprehensive API response logging and analysis
+      const responseData = response.data || {};
+      this.logApiResponse('OrderClose', broker, responseData, ticket);
+
+      // ✅ COMPREHENSIVE: Extract closing price from all possible field variations
+      const closePrice = this.extractClosePrice(responseData);
+      
+      // ✅ COMPREHENSIVE: Extract all financial data using enhanced logic
+      const financialData = this.extractFinancialData(responseData);
+      
       return {
         success: true,
-        profit: response.data?.profit || 0,
-        response: response.data
+        profit: financialData.profit,
+        swap: financialData.swap,
+        commission: financialData.commission,
+        closePrice: closePrice,
+        response: responseData
       };
     } catch (error) {
       return {
         success: false,
         error: error.message,
-        profit: 0
+        profit: 0,
+        swap: 0,
+        commission: 0
       };
     }
+  }
+
+  // Get open positions for a broker to verify trade closure
+  async getOpenPositions(broker) {
+    try {
+      const client = broker.terminal === 'MT5' ? mt5Client : mt4Client;
+      const token = await this.getValidBrokerToken(broker);
+      
+      const response = await client.get('/OpenedOrders', {
+        params: { id: token },
+        timeout: 10000
+      });
+      
+      return response.data || [];
+    } catch (error) {
+      logger.error(`Error getting open positions for ${broker.terminal} broker ${broker.id}:`, error);
+      return [];
+    }
+  }
+
+  // ✅ COMPREHENSIVE: Extract close price from all possible field variations
+  extractClosePrice(responseData) {
+    const possibleFields = [
+      'closePrice', 'exitPrice', 'price', 'closingPrice',
+      'close_price', 'exit_price', 'closing_price',
+      'finalPrice', 'final_price', 'lastPrice', 'last_price',
+      'executedPrice', 'executed_price', 'fillPrice', 'fill_price',
+      'bid', 'ask', 'midPrice', 'mid_price'
+    ];
+    
+    for (const field of possibleFields) {
+      const value = this.getNestedValue(responseData, field);
+      if (value !== undefined && value !== null && !isNaN(parseFloat(value))) {
+        return parseFloat(value);
+      }
+    }
+    return null;
+  }
+
+  // ✅ COMPREHENSIVE: Extract financial data from diverse response formats  
+  extractFinancialData(responseData) {
+    const extractField = (possibleFields) => {
+      for (const field of possibleFields) {
+        const value = this.getNestedValue(responseData, field);
+        if (value !== undefined && value !== null && !isNaN(parseFloat(value))) {
+          return parseFloat(value);
+        }
+      }
+      return 0;
+    };
+
+    return {
+      profit: extractField(['profit', 'currentProfit', 'unrealizedProfit', 'pnl', 'pl', 'netPL', 'realized_profit', 'floating_profit', 'totalProfit']),
+      swap: extractField(['swap', 'swapFee', 'swap_fee', 'swapCharges', 'swap_charges', 'rollover', 'interest', 'swapAmount']),
+      commission: extractField(['commission', 'commissionFee', 'commission_fee', 'fees', 'tradingFee', 'trading_fee', 'brokerage', 'charges'])
+    };
+  }
+
+  // Helper to get nested values from object  
+  getNestedValue(obj, path) {
+    if (!obj || typeof obj !== 'object') return undefined;
+    
+    // Handle both dot notation and direct property access
+    const keys = path.includes('.') ? path.split('.') : [path];
+    let current = obj;
+    
+    for (const key of keys) {
+      if (current === null || current === undefined || typeof current !== 'object') {
+        return undefined;
+      }
+      current = current[key];
+    }
+    
+    return current;
+  }
+
+  // ✅ COMPREHENSIVE: API response logging for debugging data extraction issues
+  logApiResponse(operation, broker, responseData, ticket = null) {
+    const logEntry = {
+      timestamp: new Date().toISOString(),
+      operation,
+      broker: {
+        id: broker.id,
+        terminal: broker.terminal,
+        server: broker.server || 'Unknown'
+      },
+      ticket,
+      responseStructure: this.analyzeObjectStructure(responseData),
+      extractedData: {
+        closePrice: this.extractClosePrice(responseData),
+        financialData: this.extractFinancialData(responseData)
+      },
+      rawResponse: responseData
+    };
+    
+    logger.info(`📊 ${operation} API Response Analysis:`, {
+      operation: logEntry.operation,
+      broker: logEntry.broker,
+      ticket: logEntry.ticket,
+      extractedClosePrice: logEntry.extractedData.closePrice,
+      extractedProfit: logEntry.extractedData.financialData.profit,
+      extractedSwap: logEntry.extractedData.financialData.swap,
+      extractedCommission: logEntry.extractedData.financialData.commission,
+      responseStructure: logEntry.responseStructure
+    });
+    
+    // Detailed raw response for debugging (only show first 1000 chars to avoid log spam)
+    const rawResponseStr = JSON.stringify(responseData, null, 2);
+    if (rawResponseStr.length > 1000) {
+      logger.info(`📄 ${operation} Raw Response (truncated):`, rawResponseStr.substring(0, 1000) + '...');
+    } else {
+      logger.info(`📄 ${operation} Raw Response:`, responseData);
+    }
+    
+    // Alert if critical data extraction failed
+    if (operation === 'OrderClose' && !logEntry.extractedData.closePrice) {
+      logger.warn(`⚠️ ${operation}: Failed to extract close price from response. Available fields: ${Object.keys(responseData).join(', ')}`);
+    }
+  }
+
+  // Analyze object structure for debugging
+  analyzeObjectStructure(obj, depth = 0, maxDepth = 3) {
+    if (depth > maxDepth || obj === null || typeof obj !== 'object') {
+      return typeof obj;
+    }
+    
+    if (Array.isArray(obj)) {
+      return `Array[${obj.length}]`;
+    }
+    
+    const structure = {};
+    for (const [key, value] of Object.entries(obj)) {
+      structure[key] = this.analyzeObjectStructure(value, depth + 1, maxDepth);
+    }
+    
+    return structure;
   }
 
   // Helper method to continue trade execution after quotes are obtained
@@ -638,6 +836,16 @@ class TradingService {
           
           await transaction1.commit();
           
+          // Start retry process for the failed broker2
+          const partialTradeRetryService = require('./partialTradeRetryService');
+          setTimeout(async () => {
+            try {
+              await partialTradeRetryService.startRetryProcess(partialTrade);
+            } catch (error) {
+              console.error('❌ Failed to start retry process for partial trade:', error.message);
+            }
+          }, 2000); // Start retry after 2 seconds
+          
           return {
             success: true,
             trade: partialTrade,
@@ -647,7 +855,7 @@ class TradingService {
               premium: currentPremium,
               futureQuote,
               spotQuote,
-              warning: 'Partial execution - only Broker1 succeeded'
+              warning: 'Partial execution - only Broker1 succeeded, retry process started'
             }
           };
         } catch (transactionError) {
@@ -695,6 +903,16 @@ class TradingService {
           
           await transaction2.commit();
           
+          // Start retry process for the failed broker1
+          const partialTradeRetryService = require('./partialTradeRetryService');
+          setTimeout(async () => {
+            try {
+              await partialTradeRetryService.startRetryProcess(partialTrade);
+            } catch (error) {
+              console.error('❌ Failed to start retry process for partial trade:', error.message);
+            }
+          }, 2000); // Start retry after 2 seconds
+          
           return {
             success: true,
             trade: partialTrade,
@@ -704,7 +922,7 @@ class TradingService {
               premium: currentPremium,
               futureQuote,
               spotQuote,
-              warning: 'Partial execution - only Broker2 succeeded'
+              warning: 'Partial execution - only Broker2 succeeded, retry process started'
             }
           };
         } catch (transactionError) {
@@ -808,6 +1026,16 @@ class TradingService {
 
       // First, get active FluxNetwork trades for this account set
       const { ActiveTrade } = require('../models');
+      
+      // Debug: Check all trades first
+      const allTrades = await ActiveTrade.findAll({
+        where: { accountSetId }
+      });
+      console.log(`🔍 Total trades for accountSet ${accountSetId}: ${allTrades.length}`);
+      allTrades.forEach(trade => {
+        console.log(`🔍 Trade ${trade.id}: status=${trade.status}, broker1Ticket=${trade.broker1Ticket}, broker2Ticket=${trade.broker2Ticket}`);
+      });
+      
       const activeTrades = await ActiveTrade.findAll({
         where: { 
           accountSetId,
@@ -815,6 +1043,8 @@ class TradingService {
         }
       });
 
+      console.log(`🔍 Active trades found for accountSet ${accountSetId}: ${activeTrades.length}`);
+      
       if (activeTrades.length === 0) {
         console.log('⏭️ No active FluxNetwork trades found, skipping order fetch');
         return [];
@@ -871,25 +1101,46 @@ class TradingService {
             return targetTickets.has(ticket);
           });
 
+          // Debug: Log raw order data to see profit fields
+          if (filteredOrders.length > 0) {
+            console.log('🔍 Raw order data from MT4/MT5 API:', JSON.stringify(filteredOrders[0], null, 2));
+          }
+
           // Enrich matched orders with broker information
-          const enrichedOrders = filteredOrders.map(order => ({
-            ...order,
-            brokerId: broker.id,
-            brokerName: broker.name,
-            brokerPosition: broker.position,
-            terminal: broker.terminal,
-            accountNumber: broker.accountNumber,
-            // Normalize common fields
-            ticket: order.ticket || order.order || order.ticketNumber || order.id,
-            symbol: order.symbol,
-            type: order.type || order.orderType || order.cmd,
-            lots: order.lots || order.volume || order.volumeSize,
-            openPrice: order.openPrice || order.price || order.open_price,
-            openTime: order.openTime || order.open_time || order.time,
-            profit: order.profit || 0,
-            swap: order.swap || 0,
-            commission: order.commission || 0
-          }));
+          const enrichedOrders = filteredOrders.map(order => {
+            // Debug: Check all possible profit field names
+            const possibleProfitFields = {
+              profit: order.profit,
+              currentProfit: order.currentProfit,
+              unrealizedProfit: order.unrealizedProfit,
+              floatingProfit: order.floatingProfit,
+              pnl: order.pnl,
+              realizedPL: order.realizedPL,
+              unrealizedPL: order.unrealizedPL
+            };
+            
+            console.log(`🔍 Profit fields for ticket ${order.ticket || order.order}:`, possibleProfitFields);
+            console.log(`🔍 Final profit value for ticket ${order.ticket || order.order}: ${order.profit || order.currentProfit || order.unrealizedProfit || order.floatingProfit || order.pnl || 0}`);
+            
+            return {
+              ...order,
+              brokerId: broker.id,
+              brokerName: broker.name,
+              brokerPosition: broker.position,
+              terminal: broker.terminal,
+              accountNumber: broker.accountNumber,
+              // Normalize common fields
+              ticket: order.ticket || order.order || order.ticketNumber || order.id,
+              symbol: order.symbol,
+              type: order.type || order.orderType || order.cmd,
+              lots: order.lots || order.volume || order.volumeSize,
+              openPrice: order.openPrice || order.price || order.open_price,
+              openTime: order.openTime || order.open_time || order.time,
+              profit: order.profit || order.currentProfit || order.unrealizedProfit || order.floatingProfit || order.pnl || 0,
+              swap: order.swap || 0,
+              commission: order.commission || 0
+            };
+          });
 
           matchedOrders.push(...enrichedOrders);
           console.log(`✅ Found ${enrichedOrders.length} FluxNetwork orders from broker ${broker.id}`);
@@ -900,7 +1151,6 @@ class TradingService {
         }
       }
 
-      console.log(`🎯 Total FluxNetwork orders found: ${matchedOrders.length}`);
       return matchedOrders;
 
     } catch (error) {

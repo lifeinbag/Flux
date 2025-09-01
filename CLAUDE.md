@@ -340,10 +340,12 @@ const quotes = await API.post('/trading/quotes/batch', { requests });
 ### **🚨 DEBUGGING GOLDEN RULES:**
 - **NEVER** assume you understand the system
 - **ALWAYS** ask for clarification when stuck
+- **ALWAYS** ask the user before making any system-level changes (killing ports, restarting servers, etc.)
 - **DEBUG** before coding
 - **ONE CHANGE** at a time
 - **EVIDENCE-BASED** problem solving
 - **UNDERSTAND** existing patterns before changing
+- **ASK THE USER** when uncertain about any procedure
 
 ### **❌ WHAT NOT TO DO:**
 - Don't make multiple code changes simultaneously
@@ -351,6 +353,8 @@ const quotes = await API.post('/trading/quotes/batch', { requests });
 - Don't create new systems when existing ones can be fixed
 - Don't skip the debugging/logging phase
 - Don't guess - ask the user when uncertain
+- **NEVER try to kill ports, restart servers, or run system commands without asking the user first**
+- **NEVER make random changes when stuck - ALWAYS ask the user what procedure should be taken**
 
 ---
 

@@ -16,9 +16,11 @@ class RealtimeTpMonitor {
   constructor() {
     this.activeTrades = new Map(); // Cache of active trades with TP
     this.isRunning = false;
-    this.checkInterval = 5000; // Check every 5 seconds for real-time monitoring
+    this.checkInterval = 1000; // Check every 1 second for real-time trading
     this.intervalId = null;
     this.wsClients = new Set(); // WebSocket clients for broadcasting
+    this.lastApiCall = new Map(); // Track last API call per broker to prevent flooding
+    this.apiThrottle = 2000; // Minimum 2 seconds between API calls per broker
   }
 
   async start() {
@@ -28,7 +30,7 @@ class RealtimeTpMonitor {
     }
 
     this.isRunning = true;
-    logger.info('🚀 Starting realtime TP monitor (5-second intervals)...');
+    logger.info('🚀 Starting realtime TP monitor (1-second intervals)...');
     
     // Load active trades with TP
     await this.loadActiveTrades();
@@ -186,9 +188,23 @@ class RealtimeTpMonitor {
     }
   }
 
-  // Get positions for a broker
+  // Get positions for a broker with API throttling
   async getBrokerPositions(broker) {
     try {
+      const brokerId = `${broker.id}_${broker.terminal}`;
+      const now = Date.now();
+      
+      // Check if we've called API recently for this broker
+      if (this.lastApiCall.has(brokerId)) {
+        const lastCall = this.lastApiCall.get(brokerId);
+        const timeSinceLastCall = now - lastCall.timestamp;
+        
+        if (timeSinceLastCall < this.apiThrottle) {
+          // Return cached positions if API call was recent
+          return lastCall.positions || [];
+        }
+      }
+      
       const token = await this.getValidToken(broker);
       const apiUrl = getApiUrl(broker.terminal);
       
@@ -197,7 +213,15 @@ class RealtimeTpMonitor {
         timeout: 10000
       });
       
-      return response.data || [];
+      const positions = response.data || [];
+      
+      // Cache the API call result
+      this.lastApiCall.set(brokerId, {
+        timestamp: now,
+        positions: positions
+      });
+      
+      return positions;
     } catch (error) {
       logger.error(`Error getting ${broker.terminal} positions for broker ${broker.id}:`, error);
       return [];
@@ -316,8 +340,7 @@ class RealtimeTpMonitor {
     try {
       logger.info(`🎯 Executing instant TP for trade ${trade.tradeId}`);
       
-      // Get current premium BEFORE closing (for accurate closing premium)
-      const closingPremium = await this.getCurrentPremium(trade) || 0;
+      // We'll calculate the closing premium after we get the close responses
       
       const [broker1Token, broker2Token] = await Promise.all([
         this.getValidToken(trade.broker1),
@@ -345,7 +368,20 @@ class RealtimeTpMonitor {
         }
       });
 
-      // Move to closed trades with accurate closing premium
+      // Calculate closing premium from close results: broker1 close price - broker2 close price  
+      let closingPremium = 0;
+      const broker1ClosePrice = closeResults[0]?.status === 'fulfilled' ? closeResults[0].value?.data?.closePrice : null;
+      const broker2ClosePrice = closeResults[1]?.status === 'fulfilled' ? closeResults[1].value?.data?.closePrice : null;
+      
+      if (broker1ClosePrice && broker2ClosePrice) {
+        closingPremium = parseFloat(broker1ClosePrice) - parseFloat(broker2ClosePrice);
+        logger.info(`✅ TP Closing premium: ${broker1ClosePrice} - ${broker2ClosePrice} = ${closingPremium.toFixed(5)}`);
+      } else {
+        closingPremium = parseFloat(trade.executionPremium) || 0;
+        logger.warn(`⚠️ TP Using execution premium as fallback: ${closingPremium.toFixed(5)}`);
+      }
+
+      // Move to closed trades with calculated closing premium
       await this.moveToClosedTrades(trade, closingPremium, totalProfit, closeResults);
       
       // Broadcast TP execution event
@@ -386,11 +422,17 @@ class RealtimeTpMonitor {
     };
   }
 
-  // Move trade to closed_trades with accurate closing premium
+  // Move trade to closed_trades with accurate closing premium and swap/commission
   async moveToClosedTrades(trade, closingPremium, totalProfit, closeResults) {
     const transaction = await ActiveTrade.sequelize.transaction();
     
     try {
+      // ✅ FIX: Extract swap and commission data from close results
+      const broker1Swap = closeResults[0]?.status === 'fulfilled' ? closeResults[0].value?.data?.swap || 0 : 0;
+      const broker2Swap = closeResults[1]?.status === 'fulfilled' ? closeResults[1].value?.data?.swap || 0 : 0;
+      const broker1Commission = closeResults[0]?.status === 'fulfilled' ? closeResults[0].value?.data?.commission || 0 : 0;
+      const broker2Commission = closeResults[1]?.status === 'fulfilled' ? closeResults[1].value?.data?.commission || 0 : 0;
+      
       await ClosedTrade.create({
         tradeId: trade.tradeId,
         accountSetId: trade.accountSetId,
@@ -406,6 +448,8 @@ class RealtimeTpMonitor {
         broker1OpenTime: trade.broker1OpenTime,
         broker1CloseTime: new Date(),
         broker1Profit: closeResults[0]?.status === 'fulfilled' ? closeResults[0].value?.data?.profit || 0 : 0,
+        broker1Swap,
+        broker1Commission,
         
         broker2Id: trade.broker2Id,
         broker2Ticket: trade.broker2Ticket,
@@ -416,10 +460,15 @@ class RealtimeTpMonitor {
         broker2OpenTime: trade.broker2OpenTime,
         broker2CloseTime: new Date(),
         broker2Profit: closeResults[1]?.status === 'fulfilled' ? closeResults[1].value?.data?.profit || 0 : 0,
+        broker2Swap,
+        broker2Commission,
         
         // Trade details with ACCURATE closing premium
         executionPremium: trade.executionPremium,
         closePremium: closingPremium, // 🎯 This was the missing piece!
+        totalProfit: totalProfit,
+        totalSwap: broker1Swap + broker2Swap,
+        totalCommission: broker1Commission + broker2Commission,
         takeProfit: trade.takeProfit,
         takeProfitMode: trade.takeProfitMode,
         stopLoss: trade.stopLoss,
@@ -430,7 +479,6 @@ class RealtimeTpMonitor {
         
         // Close details
         closeReason: 'TakeProfit',
-        totalProfit: totalProfit,
         tradeDurationMinutes: Math.floor((Date.now() - new Date(trade.createdAt).getTime()) / (1000 * 60))
       }, { transaction });
 

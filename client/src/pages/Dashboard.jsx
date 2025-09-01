@@ -3,7 +3,7 @@ import API from '../services/api';
 import { fetchSymbols, fetchQuote } from '../services/api';
 import symbolsCache from '../services/symbolsCache';
 import SellPremiumChart from '../components/SellPremiumChart';
-import { connectWS, onMessage, subscribeToQuotes, subscribeToOpenOrders, isWSConnected, getWSStatus, clearQuoteSubscriptions } from '../services/wsService';
+import { connectWS, onMessage, subscribeToQuotes, subscribeToOpenOrders, isWSConnected, getWSStatus, clearQuoteSubscriptions, wsManager, createBrokerKey, isQuoteFresh, onBalanceBatch, onQuoteBatch } from '../services/wsService';
 import { TrendingUp, DollarSign, BarChart3, Activity, AlertTriangle, Lock, Unlock, Clock } from 'lucide-react';
 // API Status Monitor removed
 import DollarRain from '../components/DollarRain';
@@ -156,7 +156,7 @@ export default function Dashboard() {
   const [tradingStatus, setTradingStatus] = useState(null);
   const [accountSets, setAccountSets] = useState([]);
   const [selectedSetId, setSelectedSetId] = useState('');
-  const [showDollarRain, setShowDollarRain] = useState(true);
+  const [showDollarRain, setShowDollarRain] = useState(false);
   const [selectedTimeframe, setSelectedTimeframe] = useState(15);
   
   const currentSet = accountSets.find(s => s._id === selectedSetId) || { brokers: [] };
@@ -186,6 +186,7 @@ export default function Dashboard() {
   const wsStatusCheckInterval = useRef(null);
   const brokerLookupCache = useRef(new Map());
   const balanceUpdateDebounce = useRef(null);
+  const [sessionStatus, setSessionStatus] = useState(null);
   
   const brokers = currentSet.brokers || [];
   const sortedBrokers = [...brokers].sort((a, b) => (a.position || 0) - (b.position || 0));
@@ -198,21 +199,78 @@ export default function Dashboard() {
   const broker1Valid = broker1.server && broker1.accountNumber && broker1.position && broker1.terminal;
   const broker2Valid = broker2.server && broker2.accountNumber && broker2.position && broker2.terminal;
   
-  const key1 = broker1Valid
-    ? `${broker1.server}|${broker1.accountNumber}|${broker1.terminal}|pos${broker1.position}`
-    : '';
-  const key2 = broker2Valid
-    ? `${broker2.server}|${broker2.accountNumber}|${broker2.terminal}|pos${broker2.position}`
-    : '';
+  // ✅ FIX 4: Use unified broker key creation
+  const key1 = broker1Valid ? createBrokerKey(broker1) : '';
+  const key2 = broker2Valid ? createBrokerKey(broker2) : '';
     
   const broker1Id = broker1.id || broker1._id;
   const broker2Id = broker2.id || broker2._id;
   
-  // Enhanced balance data with error handling - show 0 balance instead of error for non-admin users
-  const b1 = key1 ? (brokerBalances[key1] || { balance: 0, profit: 0 }) : { balance: 0, profit: 0 };
-  const b2 = key2 ? (brokerBalances[key2] || { balance: 0, profit: 0 }) : { balance: 0, profit: 0 };
-  const currentProfit = activeTrades.reduce((sum, t) => sum + (t.totalProfit || 0), 0);
-  const overallProfit = closedTrades.reduce((sum, t) => sum + (parseFloat(t.totalProfit) || 0), 0);
+  // ✅ FIX 4: Enhanced balance data with standardized keys and freshness check
+  const defaultBalance = { balance: 0, equity: 0, profit: 0, leverage: 0, lastUpdate: 0 };
+  const b1 = key1 ? (brokerBalances[key1] || defaultBalance) : defaultBalance;
+  const b2 = key2 ? (brokerBalances[key2] || defaultBalance) : defaultBalance;
+  
+  // Check balance freshness (within 5 minutes)
+  const now = Date.now();
+  const b1Fresh = b1.lastUpdate && (now - b1.lastUpdate) < 300000;
+  const b2Fresh = b2.lastUpdate && (now - b2.lastUpdate) < 300000;
+  
+  // ✅ FIX 4: Enhanced debug with freshness info
+  console.log('🔍 Broker balance lookup debug:', {
+    key1,
+    key2,
+    broker1Data: b1,
+    broker2Data: b2,
+    broker1Fresh: b1Fresh,
+    broker2Fresh: b2Fresh,
+    availableBalanceKeys: Object.keys(brokerBalances),
+    balanceDataEntries: Object.entries(brokerBalances),
+    wsManagerConnected: wsManager?.socket?.readyState === WebSocket.OPEN
+  });
+  
+  // ✅ FLUX-NETWORK SPECIFIC: Calculate broker-specific profits from REAL-TIME data
+  // Use active trades from WebSocket (these have real-time P&L) instead of database data
+  const broker1FluxProfit = activeTrades.reduce((sum, t) => {
+    // Only use actual broker1Profit field - no misleading fallbacks
+    const profit = parseFloat(t.broker1Profit) || 0;
+    return sum + profit;
+  }, 0);
+  
+  const broker2FluxProfit = activeTrades.reduce((sum, t) => {
+    // Only use actual broker2Profit field - no misleading fallbacks
+    const profit = parseFloat(t.broker2Profit) || 0;
+    return sum + profit;
+  }, 0);
+  
+  // Also try to get profits from WebSocket open orders data if active trades don't have profit
+  const wsOpenOrdersProfit = activeTrades.reduce((sum, t) => sum + (parseFloat(t.totalProfit) || 0), 0);
+  
+  const totalFluxNetworkProfit = broker1FluxProfit + broker2FluxProfit || wsOpenOrdersProfit;
+  const overallFluxProfit = closedTrades.reduce((sum, t) => sum + (parseFloat(t.totalProfit) || 0), 0);
+  
+  // 🔍 DEBUG: Log active trades data to check profit fields
+  console.log('🔍 FluxNetwork P&L Debug:', {
+    activeTradesCount: activeTrades.length,
+    sampleTrade: activeTrades[0] || null,
+    sampleTradeFields: activeTrades[0] ? Object.keys(activeTrades[0]) : [],
+    broker1FluxProfit,
+    broker2FluxProfit,
+    wsOpenOrdersProfit,
+    totalFluxNetworkProfit,
+    calculation: {
+      fromBrokerProfits: broker1FluxProfit + broker2FluxProfit,
+      fromTotalProfit: wsOpenOrdersProfit
+    },
+    tradesProfitFields: activeTrades.map(t => ({
+      id: t.id || t.tradeId,
+      broker1Profit: t.broker1Profit,
+      broker2Profit: t.broker2Profit,
+      currentProfit: t.currentProfit,
+      profit: t.profit,
+      totalProfit: t.totalProfit
+    }))
+  });
   const totalOpenOrders = activeTrades.length;
   const totalOpenLots = activeTrades.reduce((sum, t) => sum + (parseFloat(t.broker1Volume) || 0), 0);
   
@@ -315,10 +373,29 @@ export default function Dashboard() {
     if (selectedSetId) {
       loadActiveTradesData();
       loadClosedTradesData();
+      
+      // 🔧 FORCE BALANCE REFRESH: Clear balance data when switching account sets
+      // This ensures fresh balance data for all brokers in the new account set
+      console.log('🔄 Account set changed, clearing balance cache for fresh data');
+      setBrokerBalances({});
     }
   }, [selectedSetId, loadActiveTradesData, loadClosedTradesData]);
 
   useEffect(() => {
+    // Show dollar rain every time user visits dashboard (fresh login, tab switch, etc.)
+    setShowDollarRain(true);
+    
+    // Stop dollar rain after 5 seconds
+    const dollarTimeout = setTimeout(() => {
+      setShowDollarRain(false);
+    }, 5000);
+    
+    // Cleanup timeout
+    return () => clearTimeout(dollarTimeout);
+  }, []); // Empty dependency array so it runs on every component mount
+
+  useEffect(() => {
+    
     API.get('/users/me')
       .then(r => setUser(r.data))
       .catch(() => {
@@ -433,6 +510,116 @@ export default function Dashboard() {
     broker2Id
   ]);
 
+  // ✅ FIX 7: Enhanced batch handlers (moved outside useEffect to fix React Hooks rule)
+  const handleBalanceBatch = useCallback((balanceUpdates) => {
+    console.log('📊 Processing batched balance updates:', Object.keys(balanceUpdates).length);
+    
+    const processedUpdates = {};
+    
+    Object.entries(balanceUpdates).forEach(([key, data]) => {
+      const brokerId = data.brokerId || data.data?.brokerId;
+      const balanceData = data.data || data;
+      
+      if (!brokerId || !currentSet.brokers?.length || !selectedSetId) {
+        return;
+      }
+      
+      // ✅ FIX 4: Use standardized broker lookup
+      const broker = currentSet.brokers?.find(x => 
+        (x.id === brokerId) || (x._id === brokerId)
+      );
+      
+      if (!broker) {
+        console.log('⚠ Skipping balance update: broker not found in current account set', { 
+          brokerId, 
+          accountSetId: selectedSetId
+        });
+        return;
+      }
+      
+      // ✅ FIX 4: Use unified broker key creation
+      const brokerKey = createBrokerKey(broker);
+      if (brokerKey) {
+        processedUpdates[brokerKey] = {
+          balance: parseFloat(balanceData.balance) || 0,
+          equity: parseFloat(balanceData.equity) || 0,
+          profit: parseFloat(balanceData.profit) || 0,
+          leverage: parseFloat(balanceData.leverage) || 1,
+          lastUpdate: Date.now()
+        };
+      }
+    });
+    
+    if (Object.keys(processedUpdates).length > 0) {
+      setBrokerBalances(prev => ({ ...prev, ...processedUpdates }));
+      lastBalanceUpdate.current = Date.now();
+      setWsConnected(true);
+      setDataAvailable(true);
+      console.log('✅ Updated', Object.keys(processedUpdates).length, 'broker balances');
+    }
+  }, [currentSet.brokers, selectedSetId]);
+
+  const handleQuoteBatch = useCallback((quoteUpdates) => {
+    console.log('📈 Processing batched quote updates:', Object.keys(quoteUpdates).length);
+    
+    Object.values(quoteUpdates).forEach(data => {
+      // ✅ FIX 3: Validate quote freshness
+      const futureValid = isQuoteFresh(data.futureQuote);
+      const spotValid = isQuoteFresh(data.spotQuote);
+      
+      if (!futureValid || !spotValid) {
+        console.warn('⚠️ Received stale quotes in batch:', {
+          futureAge: data.futureQuote ? Date.now() - new Date(data.futureQuote.timestamp) : 'no quote',
+          spotAge: data.spotQuote ? Date.now() - new Date(data.spotQuote.timestamp) : 'no quote'
+        });
+      }
+      
+      // Process the quote update with existing logic - need to call handleQuoteUpdate
+      // But since handleQuoteUpdate is defined inside useEffect, we'll process directly here
+      // ✅ FIX 3: Enhanced quote validation
+      const futureValidLocal = data.futureQuoteFresh !== undefined ? data.futureQuoteFresh : isQuoteFresh(data.futureQuote);
+      const spotValidLocal = data.spotQuoteFresh !== undefined ? data.spotQuoteFresh : isQuoteFresh(data.spotQuote);
+      
+      console.log('🔒 Symbols locked:', currentSet.symbolsLocked);
+      console.log('🎯 Expected symbols:', { 
+        future: currentSet.symbolsLocked ? currentSet.futureSymbol : futureSymbol,
+        spot: currentSet.symbolsLocked ? currentSet.spotSymbol : spotSymbol
+      });
+      console.log('✅ Quote freshness:', { futureValidLocal, spotValidLocal });
+      
+      // Update quotes for locked symbols
+      if (currentSet.symbolsLocked) {
+        console.log('🔒 Processing locked symbols update');
+        if (data.futureSymbol === currentSet.futureSymbol && data.futureQuote) {
+          console.log('✅ Updating future quote for locked symbols:', data.futureQuote);
+          setFutureQuote(data.futureQuote);
+          setLockedFutureQuote(data.futureQuote);
+        }
+        
+        if (data.spotSymbol === currentSet.spotSymbol) {
+          if (data.spotQuote) {
+            console.log('✅ Updating spot quote for locked symbols:', data.spotQuote);
+            setSpotQuote(data.spotQuote);
+            setLockedSpotQuote(data.spotQuote);
+          }
+        }
+      } else {
+        console.log('🔓 Processing unlocked symbols update');
+        // Update quotes for unlocked symbols
+        if (data.futureSymbol === futureSymbol && data.futureQuote) {
+          console.log('✅ Updating future quote for unlocked symbols:', data.futureQuote);
+          setFutureQuote(data.futureQuote);
+        }
+        if (data.spotSymbol === spotSymbol) {
+          if (data.spotQuote) {
+            console.log('✅ Updating spot quote for unlocked symbols:', data.spotQuote);
+            setSpotQuote(data.spotQuote);
+          }
+        }
+      }
+    });
+  }, [currentSet.symbolsLocked, currentSet.futureSymbol, currentSet.spotSymbol, futureSymbol, spotSymbol]);
+
   // ✅ FIXED WebSocket useEffect with proper handlers
   useEffect(() => {
     if (!selectedSetId) {
@@ -517,11 +704,16 @@ export default function Dashboard() {
         console.log(`📊 WebSocket quotes: Future ${data.futureQuote?.source || 'unknown'} (${futureAge}ms), Spot ${data.spotQuote?.source || 'unknown'} (${spotAge}ms)`);
       }
       
+      // ✅ FIX 3: Enhanced quote validation
+      const futureValid = data.futureQuoteFresh !== undefined ? data.futureQuoteFresh : isQuoteFresh(data.futureQuote);
+      const spotValid = data.spotQuoteFresh !== undefined ? data.spotQuoteFresh : isQuoteFresh(data.spotQuote);
+      
       console.log('🔒 Symbols locked:', currentSet.symbolsLocked);
       console.log('🎯 Expected symbols:', { 
         future: currentSet.symbolsLocked ? currentSet.futureSymbol : futureSymbol,
         spot: currentSet.symbolsLocked ? currentSet.spotSymbol : spotSymbol
       });
+      console.log('✅ Quote freshness:', { futureValid, spotValid });
       
       // Update quotes for locked symbols
       if (currentSet.symbolsLocked) {
@@ -574,80 +766,44 @@ export default function Dashboard() {
       }
     };
 
+
+    // Legacy individual balance handler for backward compatibility
     const handleBalanceUpdate = (data) => {
-      // Clear previous debounce
-      if (balanceUpdateDebounce.current) {
-        clearTimeout(balanceUpdateDebounce.current);
+      const brokerId = data.brokerId || data.data?.brokerId;
+      const balanceData = data.data || data;
+      
+      if (!brokerId || !currentSet.brokers?.length || !selectedSetId) {
+        return;
       }
       
-      // Debounce balance updates to reduce re-renders
-      balanceUpdateDebounce.current = setTimeout(() => {
-        const brokerId = data.brokerId || data.data?.brokerId;
-        const balanceData = data.data || data;
-        
-        if (!brokerId || !currentSet.brokers?.length || !selectedSetId) {
-          console.log('⚠ Skipping balance update: missing required data', { 
-            brokerId: !!brokerId, 
-            hasBrokers: !!currentSet.brokers?.length, 
-            selectedSetId: !!selectedSetId 
-          });
-          return;
-        }
-        
-        // CRITICAL FIX: Only update balance if broker belongs to current account set
-        const broker = currentSet.brokers.find(x => 
-          (x.id === brokerId) || (x._id === brokerId)
-        );
-        
-        if (!broker) {
-          console.log('⚠ Skipping balance update: broker not found in current account set', { 
-            brokerId, 
-            accountSetId: selectedSetId,
-            availableBrokers: currentSet.brokers.map(b => ({ id: b.id, _id: b._id }))
-          });
-          return;
-        }
-        
-        // Cache the broker for performance
-        brokerLookupCache.current.set(brokerId, broker);
-        
-        const key = `${broker.server}|${broker.accountNumber}|${broker.terminal}|pos${broker.position}`;
-        
-        console.log('✅ Updating balance for account set:', { 
-          accountSetId: selectedSetId, 
-          brokerId, 
-          terminal: broker.terminal, 
-          balance: balanceData.balance, 
-          profit: balanceData.profit 
-        });
-        
-        setBrokerBalances(prev => {
-          // Only keep balances for brokers in current account set
-          const currentSetKeys = currentSet.brokers.map(b => 
-            `${b.server}|${b.accountNumber}|${b.terminal}|pos${b.position}`
-          );
-          
-          const filteredPrev = Object.keys(prev).reduce((acc, k) => {
-            if (currentSetKeys.includes(k)) {
-              acc[k] = prev[k];
-            }
-            return acc;
-          }, {});
-          
-          return {
-            ...filteredPrev,
-            [key]: {
-              balance: balanceData.balance || 0,
-              profit: balanceData.profit || 0
-            }
-          };
-        });
-        
+      const broker = currentSet.brokers?.find(x => 
+        (x.id === brokerId) || (x._id === brokerId)
+      );
+      
+      if (!broker) {
+        return;
+      }
+      
+      // ✅ FIX 4: Use unified broker key creation
+      const brokerKey = createBrokerKey(broker);
+      if (brokerKey) {
+        setBrokerBalances(prev => ({ 
+          ...prev, 
+          [brokerKey]: {
+            balance: parseFloat(balanceData.balance) || 0,
+            equity: parseFloat(balanceData.equity) || 0,
+            profit: parseFloat(balanceData.profit) || 0,
+            leverage: parseFloat(balanceData.leverage) || 1,
+            lastUpdate: Date.now()
+          }
+        }));
         lastBalanceUpdate.current = Date.now();
         setWsConnected(true);
         setDataAvailable(true);
-      }, 50); // 50ms debounce
+        console.log('✅ Updated single balance for broker:', brokerKey);
+      }
     };
+
     
     const handleError = (data) => {
       console.log('❌ WebSocket error received:', data);
@@ -666,7 +822,23 @@ export default function Dashboard() {
       const accountSetId = payload?.accountSetId;
       const orders = Array.isArray(payload?.orders) ? payload.orders : [];
 
-      if (accountSetId !== selectedSetId) return;
+      console.log('📨 WebSocket: Open orders update received:', {
+        accountSetId,
+        selectedSetId,
+        ordersCount: orders.length,
+        orders: orders.map(o => ({ 
+          ticket: o.ticket, 
+          brokerId: o.brokerId, 
+          brokerPosition: o.brokerPosition,
+          profit: o.profit,
+          symbol: o.symbol 
+        }))
+      });
+
+      if (accountSetId !== selectedSetId) {
+        console.log('⚠️ Ignoring orders update for different account set');
+        return;
+      }
 
       setActiveTrades(prev => {
         const byKey = new Map();
@@ -703,7 +875,7 @@ export default function Dashboard() {
       });
     };
 
-    // Register message handlers FIRST
+    // ✅ FIX 2 & FIX 7: Register both individual and batch handlers
     const unsubConnection = onMessage('connection', handleConnectionConfirmed);
     const unsubSubscription = onMessage('subscription_confirmed', handleSubscriptionConfirmed);
     const unsubQuote = onMessage('quote_update', handleQuoteUpdate);
@@ -711,6 +883,14 @@ export default function Dashboard() {
     const unsubErr = onMessage('error', handleError);
     const unsubTrade = onMessage('trade_mapping', handleTradeMapping);
     const unsubActiveOrders = onMessage('open_orders_update', handleActiveTradesUpdate);
+    const unsubApiError = onMessage('api_error', (data) => {
+      console.log('🚨 API Error received:', data);
+      // Handle API errors silently or show notification if needed
+    });
+    
+    // ✅ FIX 7: Register batch handlers for performance
+    const unsubBalanceBatch = onBalanceBatch(handleBalanceBatch);
+    const unsubQuoteBatch = onQuoteBatch(handleQuoteBatch);
 
     // Connect to WebSocket
     connectWS(selectedSetId);
@@ -756,10 +936,14 @@ export default function Dashboard() {
       unsubConnection();
       unsubSubscription();
       unsubQuote();
+      unsubApiError();
       unsubBal();
       unsubErr();
       unsubTrade();
       unsubActiveOrders();
+      // ✅ FIX 7: Cleanup batch handlers
+      unsubBalanceBatch();
+      unsubQuoteBatch();
     };
   }, [selectedSetId, futureSymbol, spotSymbol, currentSet.symbolsLocked, currentSet.futureSymbol, currentSet.spotSymbol]);
 
@@ -868,45 +1052,52 @@ export default function Dashboard() {
     loadSymbolsOptimized();
   }, [selectedSetId, currentSet.symbolsLocked, currentSet.name]);
 
-  // ✅ FIXED Premium calculation
+  // Premium calculation
   useEffect(() => {
-    console.log('💎 Premium calculation triggered:', {
-      symbolsLocked: currentSet.symbolsLocked,
-      futureQuote,
-      spotQuote,
-      lockedFutureQuote,
-      lockedSpotQuote
-    });
-    
     const activeQuotes = currentSet.symbolsLocked 
       ? { future: lockedFutureQuote || futureQuote, spot: lockedSpotQuote || spotQuote }
       : { future: futureQuote, spot: spotQuote };
-      
-    console.log('📈 Active quotes for premium calculation:', activeQuotes);
     
     if (activeQuotes.future && activeQuotes.spot) {
       const newBuyPremium = (activeQuotes.future.ask || 0) - (activeQuotes.spot.bid || 0);
       const newSellPremium = (activeQuotes.future.bid || 0) - (activeQuotes.spot.ask || 0);
       
-      console.log('💰 Premium calculation results:', {
-        buyPremium: newBuyPremium,
-        sellPremium: newSellPremium,
-        futureAsk: activeQuotes.future.ask,
-        futureBid: activeQuotes.future.bid,
-        spotBid: activeQuotes.spot.bid,
-        spotAsk: activeQuotes.spot.ask
-      });
-      
       setBuyPremium(newBuyPremium);
       setSellPremium(newSellPremium);
     } else {
-      console.log('⚠ Missing quotes for premium calculation');
       setBuyPremium(0);
       setSellPremium(0);
     }
   }, [futureQuote, spotQuote, lockedFutureQuote, lockedSpotQuote, currentSet.symbolsLocked]);
 
   // ✅ OPTIMIZED: Fetch quotes using batch API for better performance
+  // Fetch trade session status
+  const fetchSessionStatus = useCallback(async () => {
+    if (!selectedSetId || !currentSet.symbolsLocked) {
+      setSessionStatus(null);
+      return;
+    }
+
+    try {
+      const response = await API.get(`/trading/session-status/${selectedSetId}`);
+      if (response.data.success) {
+        setSessionStatus(response.data.data);
+      }
+    } catch (error) {
+      console.error('❌ Failed to fetch session status:', error);
+      setSessionStatus(null);
+    }
+  }, [selectedSetId, currentSet.symbolsLocked]);
+
+  // Fetch session status periodically
+  useEffect(() => {
+    if (selectedSetId && currentSet.symbolsLocked) {
+      fetchSessionStatus();
+      const interval = setInterval(fetchSessionStatus, process.env.REACT_APP_SESSION_STATUS_INTERVAL || 30000); // Every 30 seconds
+      return () => clearInterval(interval);
+    }
+  }, [selectedSetId, currentSet.symbolsLocked, fetchSessionStatus]);
+
   const fetchQuotes = useCallback(async () => {
     if (!futureSymbol || !spotSymbol || !broker1Id || !broker2Id) {
       setFutureQuote(null);
@@ -988,7 +1179,7 @@ export default function Dashboard() {
     }}>
       <DollarRain 
         show={showDollarRain} 
-        duration={7000}
+        duration={5000}
         onComplete={() => setShowDollarRain(false)}
       />
       <div className="modern-dashboard">
@@ -1005,19 +1196,48 @@ export default function Dashboard() {
             position: 'fixed',
             top: '80px',
             right: '20px',
-            backgroundColor: wsConnected && dataAvailable ? '#22c55e' : wsConnected && !dataAvailable ? '#f59e0b' : '#ef4444',
-            color: 'white',
-            padding: '10px 15px',
-            borderRadius: '8px',
-            fontSize: '14px',
-            fontWeight: '500',
-            zIndex: 1000,
-            boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
-            border: '1px solid rgba(255,255,255,0.1)'
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '8px',
+            zIndex: 1000
           }}>
-            {wsConnected && dataAvailable ? '✅ WebSocket Connected' : 
-             wsConnected && !dataAvailable ? '⚠️ Connected (Service Unavailable)' : 
-             `🔌 WebSocket ${wsStatus}`}
+            {/* WebSocket Status */}
+            <div style={{
+              backgroundColor: wsConnected && dataAvailable ? '#22c55e' : wsConnected && !dataAvailable ? '#f59e0b' : '#ef4444',
+              color: 'white',
+              padding: '10px 15px',
+              borderRadius: '8px',
+              fontSize: '14px',
+              fontWeight: '500',
+              boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
+              border: '1px solid rgba(255,255,255,0.1)'
+            }}>
+              {wsConnected && dataAvailable ? '✅ WebSocket Connected' : 
+               wsConnected && !dataAvailable ? '⚠️ Connected (Service Unavailable)' : 
+               `🔌 WebSocket ${wsStatus}`}
+            </div>
+            
+            {/* Trade Session Status */}
+            {sessionStatus && (
+              <div style={{
+                backgroundColor: sessionStatus.overallStatus === 'open' ? '#22c55e' : 
+                               sessionStatus.overallStatus === 'partial' ? '#f59e0b' : '#ef4444',
+                color: 'white',
+                padding: '8px 12px',
+                borderRadius: '6px',
+                fontSize: '12px',
+                fontWeight: '500',
+                boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
+                border: '1px solid rgba(255,255,255,0.1)'
+              }}>
+                🌍 Markets: {sessionStatus.overallStatus === 'open' ? '✅ OPEN' : 
+                           sessionStatus.overallStatus === 'partial' ? '⚠️ PARTIAL' : '❌ CLOSED'}
+                <div style={{ fontSize: '10px', marginTop: '2px', opacity: 0.9 }}>
+                  {sessionStatus.sessions.future.symbol}: {sessionStatus.sessions.future.isOpen ? '✅' : '❌'} | {' '}
+                  {sessionStatus.sessions.spot.symbol}: {sessionStatus.sessions.spot.isOpen ? '✅' : '❌'}
+                </div>
+              </div>
+            )}
           </div>
         )}
         
@@ -1197,12 +1417,19 @@ export default function Dashboard() {
                 </div>
                 <div className="card-info">
                   <h3>Broker 1 ({broker1Term || 'Not Set'})</h3>
-                  <p>Balance</p>
+                  <p>Balance: ${(b1.balance || 0).toLocaleString()} | Equity: ${(b1.equity || 0).toLocaleString()}</p>
+                  {(b1.balance === 0 && b1.equity === 0) && (
+                    <small style={{ color: '#f59e0b', fontSize: '10px' }}>
+                      ⚠️ Balance loading... (Check WebSocket)
+                    </small>
+                  )}
                 </div>
               </div>
-              <div className="card-value">${b1.balance.toLocaleString()}</div>
-              <div className={`card-change ${b1.profit >= 0 ? 'positive' : 'negative'}`}>
-                {b1.profit >= 0 ? '+' : ''}{b1.profit.toLocaleString()}
+              <div className="card-value">
+                {broker1FluxProfit !== 0 ? `$${broker1FluxProfit.toLocaleString()}` : '$0'}
+              </div>
+              <div className={`card-change ${broker1FluxProfit >= 0 ? 'positive' : 'negative'}`}>
+                {broker1FluxProfit !== 0 ? `${broker1FluxProfit >= 0 ? '+' : ''}${broker1FluxProfit.toLocaleString()}` : '+0'} (FluxNetwork P&L)
               </div>
             </div>
 
@@ -1213,12 +1440,19 @@ export default function Dashboard() {
                 </div>
                 <div className="card-info">
                   <h3>Broker 2 ({broker2Term || 'Not Set'})</h3>
-                  <p>Balance</p>
+                  <p>Balance: ${(b2.balance || 0).toLocaleString()} | Equity: ${(b2.equity || 0).toLocaleString()}</p>
+                  {(b2.balance === 0 && b2.equity === 0) && (
+                    <small style={{ color: '#f59e0b', fontSize: '10px' }}>
+                      ⚠️ Balance loading... (Check WebSocket)
+                    </small>
+                  )}
                 </div>
               </div>
-              <div className="card-value">${b2.balance.toLocaleString()}</div>
-              <div className={`card-change ${b2.profit >= 0 ? 'positive' : 'negative'}`}>
-                {b2.profit >= 0 ? '+' : ''}{b2.profit.toLocaleString()}
+              <div className="card-value">
+                {broker2FluxProfit !== 0 ? `$${broker2FluxProfit.toLocaleString()}` : '$0'}
+              </div>
+              <div className={`card-change ${broker2FluxProfit >= 0 ? 'positive' : 'negative'}`}>
+                {broker2FluxProfit !== 0 ? `${broker2FluxProfit >= 0 ? '+' : ''}${broker2FluxProfit.toLocaleString()}` : '+0'} (FluxNetwork P&L)
               </div>
             </div>
 
@@ -1228,13 +1462,15 @@ export default function Dashboard() {
                   <DollarSign style={{ width: '24px', height: '24px', color: '#7ed321' }} />
                 </div>
                 <div className="card-info">
-                  <h3>Current P&L</h3>
+                  <h3>FluxNetwork Open P&L</h3>
                   <p>Open Orders: {totalOpenOrders} | Lots: {totalOpenLots.toFixed(2)} | Avg. Premium: {avgPremium.toFixed(2)}</p>
                 </div>
               </div>
-              <div className="card-value">${currentProfit.toLocaleString()}</div>
-              <div className={`card-change ${currentProfit >= 0 ? 'positive' : 'negative'}`}>
-                {currentProfit >= 0 ? 'Profit' : 'Loss'}
+              <div className="card-value">
+                {totalFluxNetworkProfit !== 0 ? `$${totalFluxNetworkProfit.toLocaleString()}` : '$0'}
+              </div>
+              <div className={`card-change ${totalFluxNetworkProfit >= 0 ? 'positive' : 'negative'}`}>
+                {totalFluxNetworkProfit >= 0 ? 'Profit' : 'Loss'} (FluxNetwork Only)
               </div>
             </div>
 
@@ -1244,13 +1480,15 @@ export default function Dashboard() {
                   <BarChart3 style={{ width: '24px', height: '24px', color: '#ff9800' }} />
                 </div>
                 <div className="card-info">
-                  <h3>Overall Profit</h3>
+                  <h3>FluxNetwork Total Profit</h3>
                   <p>Closed Trades: {closedTrades.length}</p>
                 </div>
               </div>
-              <div className="card-value">${overallProfit.toLocaleString()}</div>
-              <div className={`card-change ${overallProfit >= 0 ? 'positive' : 'negative'}`}>
-                {overallProfit >= 0 ? 'Total Gain' : 'Total Loss'}
+              <div className="card-value">
+                {overallFluxProfit !== 0 ? `$${overallFluxProfit.toLocaleString()}` : '$0'}
+              </div>
+              <div className={`card-change ${overallFluxProfit >= 0 ? 'positive' : 'negative'}`}>
+                {overallFluxProfit >= 0 ? 'Total Gain' : 'Total Loss'} (FluxNetwork Only)
               </div>
             </div>
 
