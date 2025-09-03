@@ -2,6 +2,9 @@ require('dotenv').config();
 const axios = require('axios');
 const apiErrorMonitor = require('./services/apiErrorMonitor');
 
+// ✅ DEBUG CONTROL - Reads from environment variable
+const DEBUG_ENABLED = process.env.DEBUG_ENABLED === 'true';
+
 class TokenError extends Error {}
 
 class AtomicLock {
@@ -40,6 +43,7 @@ const TokenManager = {
   lock: new AtomicLock(),
   connectionPools: new Map(),
   tokenTTL: TOKEN_TTL_MS,
+  inFlight: new Map(), // ✅ FETCH LOCK: Prevent concurrent token requests
 
   init() {
     setInterval(() => this._cleanup(), CLEANUP_INTERVAL_MS);
@@ -106,7 +110,11 @@ const TokenManager = {
   },
 
   _generateKey(isMT5, serverName, account, brokerId, position = 1) {
-    return `${isMT5 ? 'MT5' : 'MT4'}|${serverName}|${account}|${brokerId || 'default'}|pos${position}`;
+    // ✅ CANONICAL KEY: Only (terminal, serverName, account) - drops brokerId/position to prevent duplicates
+    const term = isMT5 ? 'MT5' : 'MT4';
+    const srv = String(serverName || '').trim().toLowerCase();
+    const acc = String(account || '').trim();
+    return `${term}|${srv}|${acc}`;
   },
 
   // ✅ REMOVED: Unnecessary API health check
