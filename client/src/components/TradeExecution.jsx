@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { fetchSymbols, fetchQuote } from '../services/api';
 import symbolsCache from '../services/symbolsCache';
-import { connectWS, onMessage, subscribeToQuotes, wsManager, createBrokerKey, isQuoteFresh, validateTradeQuotes, onBalanceBatch, onQuoteBatch } from '../services/wsService';
+import { connectWS, onMessage, subscribeToQuotes, subscribeToPremium, wsManager, createBrokerKey, isQuoteFresh, validateTradeQuotes, onBalanceBatch, onQuoteBatch } from '../services/wsService';
 import { TrendingUp, TrendingDown, Zap, Target, Activity, BarChart3, Search, Settings, AlertTriangle } from 'lucide-react';
 import API from '../services/api';
 import './TradeExecution.css';
@@ -61,6 +61,8 @@ export default function TradeExecution({
   // ─── Premium Spread state ───
   const [futureQuote, setFutureQuote] = useState(null);
   const [spotQuote, setSpotQuote] = useState(null);
+  const [lockedFutureQuote, setLockedFutureQuote] = useState(null);
+  const [lockedSpotQuote, setLockedSpotQuote] = useState(null);
   const [buyPremium, setBuyPremium] = useState(0);
   const [sellPremium, setSellPremium] = useState(0);
   // ✅ FIX 6: Trade validation state
@@ -159,6 +161,8 @@ export default function TradeExecution({
       console.log('🧹 TradeExecution: Clearing stale quote data for account set change');
       setFutureQuote(null);
       setSpotQuote(null);
+      setLockedFutureQuote(null);
+      setLockedSpotQuote(null);
       setBuyPremium(0);
       setSellPremium(0);
     }
@@ -177,6 +181,8 @@ export default function TradeExecution({
     // ✅ Clear all state when account set changes
     setFutureQuote(null);
     setSpotQuote(null);
+    setLockedFutureQuote(null);
+    setLockedSpotQuote(null);
     setBuyPremium(0);
     setSellPremium(0);
     setError('');
@@ -755,16 +761,41 @@ export default function TradeExecution({
       return;
     }
 
-    // This handler will be called by the wsService when a new quote arrives
-    // ✅ FIX 3 & FIX 6: Enhanced quote handler with freshness validation
+    // ✅ FIX: Enhanced quote handler matching Dashboard logic
     const handleQuoteUpdate = (data) => {
-      // Check if the update is for the symbols we are currently watching
-      if (data.futureSymbol === selectedBroker1 && data.futureQuote) {
-        // ✅ FIX 3: Validate quote freshness
-        const futureValid = isQuoteFresh(data.futureQuote);
-        setFutureQuote(data.futureQuote);
-        setQuotesFreshness(prev => ({ ...prev, futureValid }));
+      console.log('📈 TradeExecution: Quote update received:', data);
+      
+      // Update quotes for locked symbols (like Dashboard)
+      if (accountSet?.symbolsLocked) {
+        console.log('🔒 Processing locked symbols update');
+        if (data.futureSymbol === accountSet.futureSymbol && data.futureQuote) {
+          console.log('✅ Updating future quote for locked symbols:', data.futureQuote);
+          setFutureQuote(data.futureQuote);
+          setLockedFutureQuote(data.futureQuote);
+        }
         
+        if (data.spotSymbol === accountSet.spotSymbol && data.spotQuote) {
+          console.log('✅ Updating spot quote for locked symbols:', data.spotQuote);
+          setSpotQuote(data.spotQuote);
+          setLockedSpotQuote(data.spotQuote);
+        }
+      } else {
+        console.log('🔓 Processing unlocked symbols update');
+        // Update quotes for unlocked symbols
+        if (data.futureSymbol === selectedBroker1 && data.futureQuote) {
+          console.log('✅ Updating future quote for unlocked symbols:', data.futureQuote);
+          setFutureQuote(data.futureQuote);
+        }
+        if (data.spotSymbol === selectedBroker2 && data.spotQuote) {
+          console.log('✅ Updating spot quote for unlocked symbols:', data.spotQuote);
+          setSpotQuote(data.spotQuote);
+        }
+      }
+      
+      // ✅ FIX 3: Validate quote freshness
+      if (data.futureQuote) {
+        const futureValid = isQuoteFresh(data.futureQuote);
+        setQuotesFreshness(prev => ({ ...prev, futureValid }));
         if (!futureValid) {
           console.warn('⚠️ TradeExecution: Received stale future quote:', {
             symbol: data.futureSymbol,
@@ -772,12 +803,9 @@ export default function TradeExecution({
           });
         }
       }
-      if (data.spotSymbol === selectedBroker2 && data.spotQuote) {
-        // ✅ FIX 3: Validate quote freshness
+      if (data.spotQuote) {
         const spotValid = isQuoteFresh(data.spotQuote);
-        setSpotQuote(data.spotQuote);
         setQuotesFreshness(prev => ({ ...prev, spotValid }));
-        
         if (!spotValid) {
           console.warn('⚠️ TradeExecution: Received stale spot quote:', {
             symbol: data.spotSymbol,
@@ -796,6 +824,51 @@ export default function TradeExecution({
       });
     };
 
+    // ✅ NEW: WebSocket premium update handler for real-time premium data
+    const handlePremiumUpdate = (data) => {
+      console.log('💰 TradeExecution: Received premium update:', data);
+      
+      // Only process if this premium update is for our selected account set
+      if (data.accountSetId === accountSet?._id) {
+        setBuyPremium(data.buyPremium || 0);
+        setSellPremium(data.sellPremium || 0);
+        
+        // Update quotes if available in premium data
+        if (data.futureQuote) {
+          setFutureQuote({
+            ...data.futureQuote,
+            timestamp: data.timestamp || new Date(),
+            source: data.source || 'websocket'
+          });
+        }
+        if (data.spotQuote) {
+          setSpotQuote({
+            ...data.spotQuote,
+            timestamp: data.timestamp || new Date(),
+            source: data.source || 'websocket'
+          });
+        }
+
+        // Update freshness validation
+        const futureValid = data.futureQuote && isQuoteFresh({ ...data.futureQuote, timestamp: data.timestamp });
+        const spotValid = data.spotQuote && isQuoteFresh({ ...data.spotQuote, timestamp: data.timestamp });
+        
+        setQuotesFreshness({ futureValid, spotValid });
+        setQuotesValidForTrading(validateTradeQuotes(
+          data.futureQuote ? { ...data.futureQuote, timestamp: data.timestamp } : null,
+          data.spotQuote ? { ...data.spotQuote, timestamp: data.timestamp } : null
+        ));
+        
+        console.log('✅ TradeExecution: Premium updated via WebSocket:', {
+          buyPremium: data.buyPremium,
+          sellPremium: data.sellPremium,
+          futureValid,
+          spotValid,
+          source: data.source
+        });
+      }
+    };
+
     // ✅ FIX 2: Universal handlers for TradeExecution
     const handleConnectionConfirmed = (data) => {
       console.log('✅ TradeExecution: WebSocket connection confirmed:', data);
@@ -811,15 +884,24 @@ export default function TradeExecution({
       setTimeout(() => setError(''), 5000);
     };
 
-    // ✅ FIX: Only connect and subscribe if symbols are locked
-    if (accountSet && accountSet.symbolsLocked && selectedBroker1 && selectedBroker2) {
+    // ✅ FIX: Connect and subscribe for both locked and unlocked symbols
+    connectWS(accountSet._id);
+    
+    if (accountSet.symbolsLocked) {
       console.log('📡 TradeExecution: Subscribing to quotes for LOCKED symbols:', { 
+        futureSymbol: accountSet.futureSymbol, 
+        spotSymbol: accountSet.spotSymbol 
+      });
+      subscribeToQuotes(accountSet._id, accountSet.futureSymbol, accountSet.spotSymbol, handleQuoteUpdate);
+      subscribeToPremium(accountSet._id, accountSet.futureSymbol, accountSet.spotSymbol);
+    } else if (selectedBroker1 && selectedBroker2) {
+      console.log('📡 TradeExecution: Subscribing to quotes for UNLOCKED symbols:', { 
         selectedBroker1, selectedBroker2 
       });
-      connectWS(accountSet._id);
       subscribeToQuotes(accountSet._id, selectedBroker1, selectedBroker2, handleQuoteUpdate);
+      subscribeToPremium(accountSet._id, selectedBroker1, selectedBroker2);
     } else {
-      console.log('🚫 TradeExecution: Skipping quote subscription - symbols not locked:', { 
+      console.log('🚫 TradeExecution: Skipping quote subscription - no symbols selected:', { 
         symbolsLocked: accountSet?.symbolsLocked,
         selectedBroker1,
         selectedBroker2
@@ -828,6 +910,7 @@ export default function TradeExecution({
 
     // ✅ FIX 2: Register universal handlers
     const unsubQuote = onMessage('quote_update', handleQuoteUpdate);
+    const unsubPremium = onMessage('premium_update', handlePremiumUpdate);
     const unsubConnection = onMessage('connection', handleConnectionConfirmed);
     const unsubSubscription = onMessage('subscription_confirmed', handleSubscriptionConfirmed);
     const unsubApiError = onMessage('api_error', handleApiError);
@@ -838,6 +921,7 @@ export default function TradeExecution({
     // This cleanup function will be called when the component unmounts or dependencies change
     return () => {
       unsubQuote();
+      unsubPremium();
       unsubConnection();
       unsubSubscription();
       unsubApiError();
@@ -905,30 +989,37 @@ export default function TradeExecution({
     };
   }, [accountSet?._id, accountSet?.name]);
 
-  // ✅ FIX 3 & FIX 6: Enhanced premium calculation with freshness validation
+  // ✅ FIX: Premium calculation matching Dashboard logic
   useEffect(() => {
-    if (futureQuote && spotQuote) {
+    // Use same logic as Dashboard: locked quotes when symbols are locked, regular quotes otherwise
+    const activeQuotes = accountSet?.symbolsLocked 
+      ? { future: lockedFutureQuote || futureQuote, spot: lockedSpotQuote || spotQuote }
+      : { future: futureQuote, spot: spotQuote };
+    
+    if (activeQuotes.future && activeQuotes.spot) {
       // ✅ FIX 3: Validate quote freshness before calculating premiums
-      const futureValid = isQuoteFresh(futureQuote);
-      const spotValid = isQuoteFresh(spotQuote);
+      const futureValid = isQuoteFresh(activeQuotes.future);
+      const spotValid = isQuoteFresh(activeQuotes.spot);
       
       if (futureValid && spotValid) {
-        const calculatedBuyPremium = (futureQuote.ask || 0) - (spotQuote.bid || 0);
-        const calculatedSellPremium = (futureQuote.bid || 0) - (spotQuote.ask || 0);
+        const calculatedBuyPremium = (activeQuotes.future.ask || 0) - (activeQuotes.spot.bid || 0);
+        const calculatedSellPremium = (activeQuotes.future.bid || 0) - (activeQuotes.spot.ask || 0);
         
         setBuyPremium(calculatedBuyPremium);
         setSellPremium(calculatedSellPremium);
         
         // ✅ FIX 6: Validate quotes for trading
-        const validForTrading = validateTradeQuotes(futureQuote, spotQuote);
+        const validForTrading = validateTradeQuotes(activeQuotes.future, activeQuotes.spot);
         setQuotesValidForTrading(validForTrading);
         
-        console.log('📈 Premium calculated:', {
+        console.log('📈 TradeExecution: Premium calculated (matching Dashboard logic):', {
           buyPremium: calculatedBuyPremium.toFixed(4),
           sellPremium: calculatedSellPremium.toFixed(4),
           validForTrading,
-          futureQuote: { bid: futureQuote.bid, ask: futureQuote.ask },
-          spotQuote: { bid: spotQuote.bid, ask: spotQuote.ask }
+          symbolsLocked: accountSet?.symbolsLocked,
+          usingLockedQuotes: accountSet?.symbolsLocked && (lockedFutureQuote || lockedSpotQuote),
+          futureQuote: { bid: activeQuotes.future.bid, ask: activeQuotes.future.ask },
+          spotQuote: { bid: activeQuotes.spot.bid, ask: activeQuotes.spot.ask }
         });
       } else {
         console.warn('⚠️ Cannot calculate premium - stale quotes:', { futureValid, spotValid });
@@ -939,7 +1030,7 @@ export default function TradeExecution({
       setSellPremium(0);
       setQuotesValidForTrading(false);
     }
-  }, [futureQuote, spotQuote]);
+  }, [futureQuote, spotQuote, lockedFutureQuote, lockedSpotQuote, accountSet?.symbolsLocked]);
 
   const onBroker1Change = async (e) => {
     const v = e.target.value;

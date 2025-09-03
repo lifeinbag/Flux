@@ -128,6 +128,8 @@ class DatabaseQuoteService {
     }
   }
 
+
+
   /**
    * Get quotes for multiple broker/symbol pairs efficiently
    * @param {Array} requests - Array of {brokerName, symbol} objects

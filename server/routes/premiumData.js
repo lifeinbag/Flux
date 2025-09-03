@@ -197,6 +197,7 @@ async function recordPremiumData(tableName, accountSetId) {
     );
 
     // ✅ DATABASE-FIRST: Get quotes from database cache
+    // ✅ DATABASE-FIRST: Get quotes from database cache
     let futureQuote = await databaseQuoteService.getQuoteFromDatabase(normalizedBroker1, accountSet.futureSymbol);
     let spotQuote = await databaseQuoteService.getQuoteFromDatabase(normalizedBroker2, accountSet.spotSymbol);
 

@@ -26,7 +26,9 @@ const databaseCleanupService = require('./services/databaseCleanupService');
 const apiErrorMonitor = require('./services/apiErrorMonitor');
 const brokerStatusLogger = require('./utils/brokerStatusLogger');
 const logLevelController = require('./utils/logLevelController');
-const tradeSessionService = require('./services/tradeSessionService');
+// TradeSession service removed - no longer checking market hours
+const wsQuoteService = require('./services/quotes/wsQuotes');  // NEW
+const restQuoteService = require('./services/quotes/restQuotes');  // NEW
 
 
 
@@ -320,13 +322,7 @@ app.get('/api/trading/session-status/:accountSetId', async (req, res) => {
       });
     }
 
-    const [futureSessionOpen, spotSessionOpen] = await tradeSessionService.checkMultipleSymbols([
-      { symbol: accountSet.futureSymbol, terminal: futureBroker.terminal, token: futureBroker.token },
-      { symbol: accountSet.spotSymbol, terminal: spotBroker.terminal, token: spotBroker.token }
-    ]);
-
-    const sessionStats = tradeSessionService.getCacheStats();
-
+    // Trade session checking removed - markets are assumed to be always active
     res.json({
       success: true,
       data: {
@@ -336,17 +332,15 @@ app.get('/api/trading/session-status/:accountSetId', async (req, res) => {
           future: {
             symbol: accountSet.futureSymbol,
             terminal: futureBroker.terminal,
-            isOpen: futureSessionOpen
+            isOpen: true // Always active now
           },
           spot: {
             symbol: accountSet.spotSymbol,
             terminal: spotBroker.terminal,
-            isOpen: spotSessionOpen
+            isOpen: true // Always active now
           }
         },
-        overallStatus: futureSessionOpen && spotSessionOpen ? 'open' : 
-                      futureSessionOpen || spotSessionOpen ? 'partial' : 'closed',
-        cache: sessionStats,
+        overallStatus: 'open',
         timestamp: new Date()
       }
     });
@@ -793,14 +787,7 @@ wss.on('connection', (ws, req) => {
       clearInterval(ws.premiumInterval);
       console.log('🛑 Cleared premium interval');
     }
-    if (ws.positionsInterval) {
-      clearInterval(ws.positionsInterval);
-      console.log('🛑 Cleared positions interval');
-    }
-    if (ws.openOrdersInterval) {
-      clearInterval(ws.openOrdersInterval);
-      console.log('🛑 Cleared open orders interval');
-    }
+    // Position and open order intervals removed - no longer using intervals for these
   });
 
   ws.on('error', (error) => {
@@ -954,24 +941,15 @@ async function handleSubscribeQuote(ws, msg) {
     // ✅ ORIGINAL WORKING SYSTEM: WebSocket makes its own API calls
     const sendQuotes = async () => {
       try {
-        // 🌍 TRADE SESSION CHECK: Stop quote updates if markets are closed
-        const [futureSessionOpen, spotSessionOpen] = await tradeSessionService.checkMultipleSymbols([
-          { symbol: futureSymbol, terminal: futureBroker.terminal, token: futureBroker.token },
-          { symbol: spotSymbol, terminal: spotBroker.terminal, token: spotBroker.token }
-        ]);
-
-        if (!futureSessionOpen && !spotSessionOpen) {
-          console.log(`⏰ Both markets closed: ${futureSymbol} & ${spotSymbol} - skipping quote updates`);
-          return;
-        }
+        // Trade session checks removed - proceeding with quote updates
 
         // Try database first for both quotes
         let futureQuote = await databaseQuoteService.getQuoteFromDatabase(normalizedFuture, futureSymbol);
         let spotQuote = await databaseQuoteService.getQuoteFromDatabase(normalizedSpot, spotSymbol);
 
-        // Only call API if database cache is stale AND session is open (1 minute tolerance for non-critical quotes)
-        const quoteTolerance = process.env.QUOTE_CACHE_TOLERANCE || 60000;
-        if (!databaseQuoteService.isQuoteFresh(futureQuote, quoteTolerance) && futureSessionOpen) {
+        // Only call API if database cache is stale (configurable tolerance for WebSocket quotes)
+        const webSocketQuoteThreshold = parseInt(process.env.WEBSOCKET_QUOTE_THRESHOLD_MS) || 5000;
+        if (!databaseQuoteService.isQuoteFresh(futureQuote, webSocketQuoteThreshold)) {
           try {
             const futureToken = await getValidBrokerToken(futureBroker);
             const apiQuote = await fetchQuote(futureToken, futureSymbol, futureBroker.terminal, futureBroker.id, futureBrokerInfo);
@@ -981,6 +959,10 @@ async function handleSubscribeQuote(ws, msg) {
                 source: 'api',
                 timestamp: new Date()
               };
+              
+              // ✅ FIX: Store fresh WebSocket quote to database immediately
+              const persistentDataCollection = require('./services/persistentDataCollection');
+              await persistentDataCollection.storeBidAskData(normalizedFuture, futureSymbol, futureQuote, futureToken, futureBroker.terminal);
               
               // Log successful WebSocket quote fetch
               brokerStatusLogger.logSuccess(
@@ -996,7 +978,7 @@ async function handleSubscribeQuote(ws, msg) {
           }
         }
 
-        if (!databaseQuoteService.isQuoteFresh(spotQuote, quoteTolerance) && spotSessionOpen) {
+        if (!databaseQuoteService.isQuoteFresh(spotQuote, webSocketQuoteThreshold)) {
           try {
             const spotToken = await getValidBrokerToken(spotBroker);
             const apiQuote = await fetchQuote(spotToken, spotSymbol, spotBroker.terminal, spotBroker.id, spotBrokerInfo);
@@ -1006,6 +988,10 @@ async function handleSubscribeQuote(ws, msg) {
                 source: 'api',
                 timestamp: new Date()
               };
+              
+              // ✅ FIX: Store fresh WebSocket spot quote to database immediately
+              const persistentDataCollection = require('./services/persistentDataCollection');
+              await persistentDataCollection.storeBidAskData(normalizedSpot, spotSymbol, spotQuote, spotToken, spotBroker.terminal);
               
               // Log successful WebSocket spot quote fetch
               brokerStatusLogger.logSuccess(
@@ -1022,8 +1008,10 @@ async function handleSubscribeQuote(ws, msg) {
         }
 
         if (futureQuote && spotQuote) {
+          const serverSendTime = Date.now();
           const quoteMessage = {
             type: 'quote_update',
+            serverSendTime,
             data: { 
               futureSymbol, 
               spotSymbol, 
@@ -1234,7 +1222,7 @@ async function handleSubscribePositions(ws, msg) {
     subscribeClient(ws, accountSetId);
     
     // Clear any existing positions interval
-    if (ws.positionsInterval) clearInterval(ws.positionsInterval);
+    // Positions interval removed
     
     // Function to fetch & broadcast positions
     const sendPositions = async () => {
@@ -1322,9 +1310,8 @@ async function handleSubscribePositions(ws, msg) {
       }
     };
     
-    // Send immediately, then every 2 seconds
+    // Send immediately only (no interval updates)
     await sendPositions();
-    ws.positionsInterval = setInterval(sendPositions, process.env.POSITION_UPDATE_INTERVAL || 2000);
     
     console.log('✅ Positions subscription started for account set:', accountSetId);
     
@@ -1388,7 +1375,7 @@ async function handleSubscribeOpenOrders(ws, msg) {
     subscribeClient(ws, accountSetId);
     
     // Clear any existing open orders interval
-    if (ws.openOrdersInterval) clearInterval(ws.openOrdersInterval);
+    // Open orders interval removed
     
     // Import trading service to use the open orders functions
     const tradingService = require('./services/tradingService');
@@ -1406,27 +1393,7 @@ async function handleSubscribeOpenOrders(ws, msg) {
           }]
         });
 
-        if (accountSet?.symbolsLocked && accountSet.futureSymbol && accountSet.spotSymbol) {
-          const futureBroker = accountSet.brokers?.find(b => b.position === 1);
-          const spotBroker = accountSet.brokers?.find(b => b.position === 2);
-          
-          if (futureBroker && spotBroker) {
-            try {
-              const [futureSessionOpen, spotSessionOpen] = await tradeSessionService.checkMultipleSymbols([
-                { symbol: accountSet.futureSymbol, terminal: futureBroker.terminal, token: futureBroker.token },
-                { symbol: accountSet.spotSymbol, terminal: spotBroker.terminal, token: spotBroker.token }
-              ]);
-
-              if (!futureSessionOpen && !spotSessionOpen) {
-                console.log(`⏰ Both markets closed for ${accountSet.name} - fetching existing open orders but no new quotes`);
-                // Continue fetching open orders as existing positions need to be monitored
-                // even when markets are closed for risk management
-              }
-            } catch (sessionError) {
-              console.warn('⚠ Trade session check failed for open orders, continuing:', sessionError.message);
-            }
-          }
-        }
+        // Trade session checks removed - proceeding with open orders fetch
         
         // ✅ OPTIMIZED: Use targeted fetch for FluxNetwork trades only
         const openOrders = await tradingService.fetchOrdersForActiveTradeTickets(accountSetId);
@@ -1467,9 +1434,8 @@ async function handleSubscribeOpenOrders(ws, msg) {
       }
     };
     
-    // Send immediately, then every 3 seconds
+    // Send immediately only (no interval updates)
     await sendOpenOrders();
-    ws.openOrdersInterval = setInterval(sendOpenOrders, process.env.OPEN_ORDERS_UPDATE_INTERVAL || 3000);
     
     console.log('✅ Open orders subscription started for account set:', accountSetId);
     
@@ -1500,30 +1466,7 @@ async function broadcastBalanceUpdates(accountSetId) {
       return;
     }
 
-    // 🌍 TRADE SESSION CHECK: Stop all API calls if markets are closed
-    if (accountSet.symbolsLocked && accountSet.futureSymbol && accountSet.spotSymbol) {
-      const futureBroker = accountSet.brokers.find(b => b.position === 1);
-      const spotBroker = accountSet.brokers.find(b => b.position === 2);
-      
-      if (futureBroker && spotBroker) {
-        try {
-          const [futureSessionOpen, spotSessionOpen] = await tradeSessionService.checkMultipleSymbols([
-            { symbol: accountSet.futureSymbol, terminal: futureBroker.terminal, token: futureBroker.token },
-            { symbol: accountSet.spotSymbol, terminal: spotBroker.terminal, token: spotBroker.token }
-          ]);
-
-          if (!futureSessionOpen && !spotSessionOpen) {
-            console.log(`⏰ Both markets closed for ${accountSet.name}: ${accountSet.futureSymbol} & ${accountSet.spotSymbol} - balance/equity updates will continue, but quote updates are skipped`);
-            // Don't return here - balance and equity should be fetched regardless of market hours
-            // Only quote and position updates should be skipped during market close
-          } else if (!futureSessionOpen || !spotSessionOpen) {
-            console.log(`⏰ One market closed for ${accountSet.name}: Future=${futureSessionOpen}, Spot=${spotSessionOpen} - continuing with all calls`);
-          }
-        } catch (sessionError) {
-          console.warn('⚠ Trade session check failed, continuing with API calls:', sessionError.message);
-        }
-      }
-    }
+    // Trade session checks removed - proceeding with balance updates
 
     if (DEBUG_ENABLED) console.log(`📊 Found ${accountSet.brokers.length} brokers for account set`);
 
@@ -1624,11 +1567,14 @@ app.locals.broadcastCustomData = broadcastCustomData;
 syncDatabase()
   .then(async () => {
     
+    // ✅ FIX: Always run persistentDataCollection for database updates
+    // This service stores premium data to database regardless of quote source
     try {
       await persistentDataCollectionService.initialize();
       const activeCollections = persistentDataCollectionService.getCollectionStatus();
+      console.log(`✅ Persistent data collection initialized with ${activeCollections.length} active collections`);
     } catch (err) {
-      // Data collection failed to initialize
+      console.error('❌ Failed to initialize persistent data collection:', err.message);
     }
     
     // Initialize partial trade retry service
@@ -1675,6 +1621,17 @@ syncDatabase()
     setTimeout(() => {
       brokerStatusLogger.start();
     }, 2000);
+	
+	    // === Start quote source (WS vs REST) ===
+    const source = process.env.QUOTES_SOURCE || 'rest';
+    if (source === 'ws') {
+      wsQuoteService.start();
+      console.log('✅ WebSocket quote service started (QUOTES_SOURCE=ws)');
+    } else {
+      restQuoteService.start();
+      console.log('✅ REST quote service started (default)');
+    }
+
 
 
     

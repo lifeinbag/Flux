@@ -333,6 +333,18 @@ export function connectWS(accountSetId) {
         wsManager.balanceUpdateBuffer.set(brokerKey, messagePayload);
       }
     } else if (msg.type === 'quote_update') {
+      // Calculate WebSocket transmission speed
+      const clientReceiveTime = Date.now();
+      const wsSpeed = msg.serverSendTime ? clientReceiveTime - msg.serverSendTime : null;
+      
+      // Add wsSpeed to both quotes
+      if (messagePayload.futureQuote && wsSpeed !== null) {
+        messagePayload.futureQuote.wsSpeed = wsSpeed;
+      }
+      if (messagePayload.spotQuote && wsSpeed !== null) {
+        messagePayload.spotQuote.wsSpeed = wsSpeed;
+      }
+      
       wsManager.quoteUpdateBuffer[`${messagePayload.futureSymbol}_${messagePayload.spotSymbol}`] = messagePayload;
     }
 

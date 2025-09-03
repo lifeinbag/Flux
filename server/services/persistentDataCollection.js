@@ -1,5 +1,5 @@
 // server/services/persistentDataCollection.js
-const { AccountSet, Broker } = require('../models/AccountSet');
+ const { AccountSet, Broker } = require('../models/AccountSet');
 const sequelize = require('../config/database');
 const { Op } = require('sequelize');
 const logger = require('../utils/logger');
@@ -8,7 +8,7 @@ const axios = require('axios');
 const intelligentNormalizer = require('../utils/intelligentBrokerNormalizer');
 const simpleStatusLogger = require('../utils/simpleStatusLogger');
 const brokerStatusLogger = require('../utils/brokerStatusLogger');
-const tradeSessionService = require('./tradeSessionService');
+// TradeSession service removed - no longer checking market hours
 
 // 🔧 DEBUG CONTROL - Reads from environment variable or defaults to false
 const DEBUG_ENABLED = process.env.DEBUG_ENABLED === 'true';
@@ -35,9 +35,7 @@ class PersistentDataCollectionService {
     if (this.initialized) return;
 
     try {
-      // Initialize trade session service
-      tradeSessionService.startPeriodicCleanup();
-      logger.info('🌍 Trade session service initialized');
+      // Trade session service removed
       const lockedSets = await AccountSet.findAll({
         where: {
           symbolsLocked: true,
@@ -108,7 +106,7 @@ class PersistentDataCollectionService {
       } catch (error) {
         logger.error(`Error in data collection for ${collectionKey}:`, error.message);
       }
-    }, process.env.PREMIUM_COLLECTION_INTERVAL || 500); // Configurable interval for premium data collection
+    }, process.env.PREMIUM_COLLECTION_INTERVAL || 1000); // Configurable interval for premium data collection
 
     this.activeCollections.set(collectionKey, {
       interval,
@@ -126,31 +124,22 @@ class PersistentDataCollectionService {
     } = config;
 
     try {
-      // 🌍 TRADE SESSION CHECK: Avoid unnecessary API calls during market close
-      const [futureSessionOpen, spotSessionOpen] = await tradeSessionService.checkMultipleSymbols([
-        { symbol: futureSymbol, terminal: broker1Terminal, token: broker1Token },
-        { symbol: spotSymbol, terminal: broker2Terminal, token: broker2Token }
-      ]);
-
-      if (!futureSessionOpen && !spotSessionOpen) {
-        // Both markets are closed, skip data collection entirely
-        logger.info(`⏰ Both markets closed: ${futureSymbol} (${broker1Terminal}) & ${spotSymbol} (${broker2Terminal}) - skipping data collection`);
-        return;
-      }
+      // Trade session checks removed - proceeding with data collection
 
       // ✅ DATABASE-FIRST APPROACH: Check cache before API calls
       let futureQuote = await this.getQuoteFromBidAskTable(company1, futureSymbol);
       let spotQuote = await this.getQuoteFromBidAskTable(company2, spotSymbol);
 
-      // Only fetch fresh quotes if sessions are open
-      if (!this.isQuoteFresh(futureQuote, 500) && futureSessionOpen) {
+      // Fetch fresh quotes if cache is stale
+      const quoteStaleThreshold = parseInt(process.env.QUOTE_STALE_THRESHOLD_MS) || 500;
+      if (!this.isQuoteFresh(futureQuote, quoteStaleThreshold)) {
         futureQuote = await this.fetchQuoteWithRetry(accountSetId, futureSymbol, 1);
         if (futureQuote) {
           await this.storeBidAskData(company1, futureSymbol, futureQuote, futureQuote.token, futureQuote.terminal);
         }
       }
 
-      if (!this.isQuoteFresh(spotQuote, 500) && spotSessionOpen) {
+      if (!this.isQuoteFresh(spotQuote, quoteStaleThreshold)) {
         spotQuote = await this.fetchQuoteWithRetry(accountSetId, spotSymbol, 2);
         if (spotQuote) {
           await this.storeBidAskData(company2, spotSymbol, spotQuote, spotQuote.token, spotQuote.terminal);
@@ -380,13 +369,15 @@ class PersistentDataCollectionService {
     }
   }
 
-  // 🚀 ULTRA-FAST: Check if quote is fresh (within specified age) - default 2 seconds for ultra-fast data
-  isQuoteFresh(quote, maxAgeMs = 2000) {
+  // 🚀 ULTRA-FAST: Check if quote is fresh (within specified age) - configurable via ENV
+  isQuoteFresh(quote, maxAgeMs = null) {
+    const defaultThreshold = parseInt(process.env.QUOTE_FRESH_THRESHOLD_MS) || 2000;
+    const threshold = maxAgeMs !== null ? maxAgeMs : defaultThreshold;
     if (!quote || !quote.timestamp) {
       return false;
     }
     const ageMs = this.getQuoteAgeMs(quote);
-    return ageMs <= maxAgeMs;
+    return ageMs <= threshold;
   }
 
   // ✅ NEW: Get age of quote in milliseconds

@@ -307,6 +307,53 @@ const quotes = await API.post('/trading/quotes/batch', { requests });
 
 ---
 
+## 🚨 CRITICAL: WEBSOCKET-DATABASE SYNCHRONIZATION METHODOLOGY
+
+### **GOLDEN RULE FOR DATA CONSISTENCY:**
+**"UI showing correct real-time data but database inconsistent = WebSocket quotes not persisting to database"**
+
+### **THE "WEBSOCKET-DATABASE SYNC" DEBUGGING METHOD:**
+
+#### **Phase 1: IDENTIFY Data Flow Gaps**
+1. **🔍 UI vs DATABASE COMPARISON**: Compare what UI shows vs what database contains
+2. **📊 WEBSOCKET TRACE**: Check if WebSocket fetches fresh quotes but doesn't store them
+3. **🎯 PERSISTENT COLLECTION STATUS**: Verify persistent data collection service is running
+4. **❓ QUOTE SOURCE LOGIC**: Check if database updates are disabled for WebSocket mode
+
+#### **Phase 2: SYNCHRONIZE Data Flows**
+1. **💾 WEBSOCKET → DATABASE**: Ensure WebSocket API fetches immediately store to database
+2. **🔄 PERSISTENT SERVICE**: Always run persistent data collection regardless of quote source  
+3. **⚡ PREMIUM CALCULATION**: Use same logic (locked/unlocked quotes) across all components
+4. **🎛️ ENVIRONMENT VARIABLES**: Replace hardcoded timing with configurable ENV values
+
+#### **Phase 3: UNIFIED PREMIUM LOGIC**
+1. **🎯 DASHBOARD MATCHING**: Make TradeExecution use same premium calculation as Dashboard
+2. **🔒 LOCKED vs UNLOCKED**: Handle account set symbols consistently across components  
+3. **✅ QUOTE FRESHNESS**: Apply same validation logic everywhere
+4. **📸 BROKER KEY CONSISTENCY**: Use unified broker key creation across UI and backend
+
+### **🔧 SYNCHRONIZATION FIX PATTERN:**
+```javascript
+// ✅ WebSocket Quote + Database Storage Pattern
+if (!databaseQuoteService.isQuoteFresh(quote, threshold)) {
+  const apiQuote = await fetchQuote(token, symbol, terminal);
+  if (apiQuote) {
+    // Store to database immediately
+    await persistentDataCollection.storeBidAskData(broker, symbol, apiQuote);
+    quote = apiQuote;
+  }
+}
+```
+
+### **🔍 CRITICAL FILES TO CHECK:**
+- `server/index.js` - WebSocket quote handlers (lines ~950-1000)
+- `server/services/persistentDataCollection.js` - Database storage service  
+- `client/src/pages/Dashboard.jsx` - Premium calculation reference
+- `client/src/components/TradeExecution.jsx` - Component consistency
+- `server/index.js` - Service initialization (lines ~1570-1580)
+
+---
+
 ## 🚨 CRITICAL: SYSTEMATIC DEBUGGING METHODOLOGY
 
 ### **GOLDEN RULE:**

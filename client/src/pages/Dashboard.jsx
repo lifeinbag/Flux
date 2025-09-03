@@ -1089,14 +1089,7 @@ export default function Dashboard() {
     }
   }, [selectedSetId, currentSet.symbolsLocked]);
 
-  // Fetch session status periodically
-  useEffect(() => {
-    if (selectedSetId && currentSet.symbolsLocked) {
-      fetchSessionStatus();
-      const interval = setInterval(fetchSessionStatus, process.env.REACT_APP_SESSION_STATUS_INTERVAL || 30000); // Every 30 seconds
-      return () => clearInterval(interval);
-    }
-  }, [selectedSetId, currentSet.symbolsLocked, fetchSessionStatus]);
+  // Session status polling removed - using WebSocket real-time data instead
 
   const fetchQuotes = useCallback(async () => {
     if (!futureSymbol || !spotSymbol || !broker1Id || !broker2Id) {
@@ -1312,8 +1305,7 @@ export default function Dashboard() {
                         <div>Sell Premium: {sellPremium.toFixed(2)}</div>
                         {(futureQuote?.source || spotQuote?.source) && (
                           <div style={{ fontSize: '10px', color: '#666', marginTop: '4px' }}>
-                            Data: {futureQuote?.source === 'api' ? '🌐' : '💾'} Future, {spotQuote?.source === 'api' ? '🌐' : '💾'} Spot
-                            {futureQuote?.age !== undefined && ` (${Math.round((futureQuote.age + (spotQuote?.age || 0))/2)}ms)`}
+                            Data: {futureQuote?.source === 'api' ? '🌐' : '💾'} Future{futureQuote?.wsSpeed !== undefined ? ` (${futureQuote.wsSpeed}ms)` : ''}, {spotQuote?.source === 'api' ? '🌐' : '💾'} Spot{spotQuote?.wsSpeed !== undefined ? ` (${spotQuote.wsSpeed}ms)` : ''}
                           </div>
                         )}
                       </div>

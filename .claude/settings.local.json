@@ -38,7 +38,8 @@
       "mcp__playwright__browser_click",
       "mcp__playwright__browser_snapshot",
       "Read(c:\\Users\\jaish\\OneDrive\\Pictures\\Screenshots/**)",
-      "mcp__playwright__browser_fill_form"
+      "mcp__playwright__browser_fill_form",
+      "Read(c:\\Users\\jaish\\OneDrive\\Pictures\\Screenshots/**)"
     ],
     "deny": []
   }
