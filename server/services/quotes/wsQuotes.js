@@ -18,6 +18,36 @@ const intelligentNormalizer = require('../../utils/intelligentBrokerNormalizer')
 const { TokenManager } = require('../../token-manager');
 const logger = require('../../utils/logger');
 
+// ---------- Backoff & Retry Management ----------
+const backoffDelays = new Map(); // accountSetId -> ms
+const retryTimeouts = new Map(); // accountSetId -> timeoutId
+
+function getNextDelay(accountSetId) {
+  const current = backoffDelays.get(accountSetId) || 2000; // start at 2s
+  const next = Math.min(current * 2, 60000); // cap at 60s
+  backoffDelays.set(accountSetId, next);
+  return current;
+}
+
+function resetDelay(accountSetId) {
+  backoffDelays.set(accountSetId, 2000);
+}
+
+function scheduleRetry(accountSetId, delay, retryFn) {
+  // Clear any existing retry for this account set
+  const existingTimeout = retryTimeouts.get(accountSetId);
+  if (existingTimeout) {
+    clearTimeout(existingTimeout);
+  }
+
+  const timeoutId = setTimeout(() => {
+    retryTimeouts.delete(accountSetId);
+    retryFn();
+  }, delay);
+  
+  retryTimeouts.set(accountSetId, timeoutId);
+}
+
 // ---------- Config ----------
 const HEARTBEAT_SEC = Number(process.env.WS_HEARTBEAT_SEC);
 const IDLE_TIMEOUT_SEC = Number(process.env.WS_IDLE_TIMEOUT_SEC);
@@ -441,51 +471,85 @@ async function start() {
   logger.info(`WSQuotes: starting for ${sets.length} locked account sets`);
 
   for (const set of sets) {
-    const brokers = await Broker.findAll({
-      where: { accountSetId: set.id },
-      order: [['position','ASC']]
-    });
-
-    const futureBroker = brokers.find(b => b.position === 1);
-    const spotBroker   = brokers.find(b => b.position === 2);
-    if (!futureBroker || !spotBroker) {
-      logger.warn(`WSQuotes: Skip AS ${set.id}: missing broker at position 1 or 2`);
-      continue;
+    try {
+      await processAccountSet(set);
+    } catch (error) {
+      const delay = getNextDelay(set.id);
+      logger.error(`WSQuotes: Error processing AS ${set.id}: ${error.message}. Retry in ${delay}ms`);
+      
+      scheduleRetry(set.id, delay, async () => {
+        try {
+          await processAccountSet(set);
+        } catch (retryError) {
+          logger.error(`WSQuotes: Retry failed for AS ${set.id}: ${retryError.message}`);
+          // Will be retried again by the next main start() cycle
+        }
+      });
     }
+  }
+}
 
-    const company1 = await intelligentNormalizer.normalizeBrokerName(
-      futureBroker.brokerName, futureBroker.server, futureBroker.companyName
-    );
-    const company2 = await intelligentNormalizer.normalizeBrokerName(
-      spotBroker.brokerName, spotBroker.server, spotBroker.companyName
-    );
+async function processAccountSet(set) {
+  const brokers = await Broker.findAll({
+    where: { accountSetId: set.id },
+    order: [['position','ASC']]
+  });
 
-    const token1 = await TokenManager.getToken(
-      (futureBroker.terminal || '').toUpperCase() === 'MT5',
-      futureBroker.server, futureBroker.accountNumber, futureBroker.password,
-      futureBroker.id, futureBroker.position || 1
-    );
-    const token2 = await TokenManager.getToken(
-      (spotBroker.terminal || '').toUpperCase() === 'MT5',
-      spotBroker.server, spotBroker.accountNumber, spotBroker.password,
-      spotBroker.id, spotBroker.position || 2
-    );
-
-    const sym1 = set.futureSymbol;
-    const sym2 = set.spotSymbol;
-
-    addIndex(token1, sym1, { accountSetId: set.id, role: 'future', companyName: company1, premiumTableName: set.premiumTableName });
-    addIndex(token2, sym2, { accountSetId: set.id, role: 'spot',   companyName: company2, premiumTableName: set.premiumTableName });
-
-    await ensureClient(token1, (futureBroker.terminal || '').toUpperCase(), [sym1]);
-    await ensureClient(token2, (spotBroker.terminal || '').toUpperCase(), [sym2]);
-
-    logger.info(`WSQuotes AS ${set.name || set.id}: ${company1}/${sym1} ↔ ${company2}/${sym2} → table "${set.premiumTableName}"`);
+  const futureBroker = brokers.find(b => b.position === 1);
+  const spotBroker   = brokers.find(b => b.position === 2);
+  if (!futureBroker || !spotBroker) {
+    logger.warn(`WSQuotes: Skip AS ${set.id}: missing broker at position 1 or 2`);
+    return;
   }
 
-  // graceful shutdown hook
-  process.on('SIGINT', stop);
+  const company1 = await intelligentNormalizer.normalizeBrokerName(
+    futureBroker.brokerName, futureBroker.server, futureBroker.companyName
+  );
+  const company2 = await intelligentNormalizer.normalizeBrokerName(
+    spotBroker.brokerName, spotBroker.server, spotBroker.companyName
+  );
+
+  const token1 = await TokenManager.getToken(
+    (futureBroker.terminal || '').toUpperCase() === 'MT5',
+    futureBroker.server, futureBroker.accountNumber, futureBroker.password,
+    futureBroker.id, futureBroker.position || 1
+  );
+  const token2 = await TokenManager.getToken(
+    (spotBroker.terminal || '').toUpperCase() === 'MT5',
+    spotBroker.server, spotBroker.accountNumber, spotBroker.password,
+    spotBroker.id, spotBroker.position || 2
+  );
+
+  // ✅ CRITICAL: Handle null tokens gracefully
+  if (!token1) {
+    const delay = getNextDelay(set.id);
+    logger.warn(`WSQuotes: No token for future broker (AS ${set.id}). Will retry in ${delay}ms`);
+    throw new Error(`No token available for future broker`);
+  }
+  
+  if (!token2) {
+    const delay = getNextDelay(set.id);
+    logger.warn(`WSQuotes: No token for spot broker (AS ${set.id}). Will retry in ${delay}ms`);
+    throw new Error(`No token available for spot broker`);
+  }
+
+  // Success - reset backoff delay
+  resetDelay(set.id);
+
+  const sym1 = set.futureSymbol;
+  const sym2 = set.spotSymbol;
+
+  addIndex(token1, sym1, { accountSetId: set.id, role: 'future', companyName: company1, premiumTableName: set.premiumTableName });
+  addIndex(token2, sym2, { accountSetId: set.id, role: 'spot',   companyName: company2, premiumTableName: set.premiumTableName });
+
+  await ensureClient(token1, (futureBroker.terminal || '').toUpperCase(), [sym1]);
+  await ensureClient(token2, (spotBroker.terminal || '').toUpperCase(), [sym2]);
+
+  logger.info(`WSQuotes AS ${set.name || set.id}: ${company1}/${sym1} ↔ ${company2}/${sym2} → table "${set.premiumTableName}"`);
 }
+
+// graceful shutdown hook
+process.on('SIGINT', stop);
 
 async function stop() {
   if (!started) return;

@@ -58,7 +58,9 @@ const TokenManager = {
   _getClient(isMT5) {
     const baseURL = isMT5 ? process.env.MT5_API_URL : process.env.MT4_API_URL;
     if (!baseURL) {
-      throw new TokenError(`Missing API URL for ${isMT5 ? 'MT5' : 'MT4'}`);
+      const error = new Error(`Missing API URL for ${isMT5 ? 'MT5' : 'MT4'}`);
+      console.log(`❌ Configuration error: ${error.message}`);
+      throw error; // This will be caught in getToken and return null
     }
     
     const poolKey = `${isMT5 ? 'MT5' : 'MT4'}_pool`;
@@ -113,7 +115,8 @@ const TokenManager = {
 
   async getToken(isMT5, serverName, account, password, brokerId = null, position = 1) {
     if (!serverName || !account || !password) {
-      throw new TokenError('Missing credentials');
+      console.log(`❌ Missing credentials for token request`);
+      return null; // Never throw, return null instead
     }
     
     const key = this._generateKey(isMT5, serverName, account, brokerId, position);
@@ -160,7 +163,13 @@ const TokenManager = {
 
     // ✅ REMOVED: Unnecessary API health check before token fetch
     // Real API health is determined during actual token connection attempts
-    const client = this._getClient(isMT5);
+    let client;
+    try {
+      client = this._getClient(isMT5);
+    } catch (error) {
+      console.log(`❌ Failed to get client for ${isMT5 ? 'MT5' : 'MT4'}: ${error.message}`);
+      return null; // Return null instead of throwing
+    }
 
     // Fetch new token under lock
     const release = await this.lock.acquire(key);
@@ -173,6 +182,10 @@ const TokenManager = {
       });
       console.log(`✅ New token cached for ${serverName}|${account}`);
       return result.token;
+    } catch (error) {
+      // ✅ CRITICAL: Never throw - return null and let caller handle retry
+      console.log(`❌ Token fetch failed for ${serverName}|${account}: ${error.message}`);
+      return null;
     } finally {
       release();
     }
