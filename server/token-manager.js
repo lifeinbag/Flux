@@ -2,6 +2,9 @@ require('dotenv').config();
 const axios = require('axios');
 const apiErrorMonitor = require('./services/apiErrorMonitor');
 
+// ✅ DEBUG CONTROL - Reads from environment variable
+const DEBUG_ENABLED = process.env.DEBUG_ENABLED === 'true';
+
 class TokenError extends Error {}
 
 class AtomicLock {
@@ -40,6 +43,7 @@ const TokenManager = {
   lock: new AtomicLock(),
   connectionPools: new Map(),
   tokenTTL: TOKEN_TTL_MS,
+  inFlight: new Map(), // ✅ FETCH LOCK: Prevent concurrent token requests
 
   init() {
     setInterval(() => this._cleanup(), CLEANUP_INTERVAL_MS);
@@ -97,14 +101,29 @@ const TokenManager = {
     return { client: this._getClient(isMT5) };
   },
   
-  invalidateToken(key) {
+  invalidateToken(key, reason = 'expired') {
     if (this.cache.has(key)) {
       this.cache.delete(key);
+      console.log(`🗑️ Token invalidated: ${key} (${reason})`);
+    }
+    // Also clear any in-flight requests for this key
+    if (this.inFlight.has(key)) {
+      this.inFlight.delete(key);
     }
   },
 
+  // ✅ ENHANCED: Token invalidation by broker details
+  invalidateTokenByDetails(isMT5, serverName, account, reason = 'expired') {
+    const key = this._generateKey(isMT5, serverName, account);
+    this.invalidateToken(key, reason);
+  },
+
   _generateKey(isMT5, serverName, account, brokerId, position = 1) {
-    return `${isMT5 ? 'MT5' : 'MT4'}|${serverName}|${account}|${brokerId || 'default'}|pos${position}`;
+    // ✅ CANONICAL KEY: Only (terminal, serverName, account) - drops brokerId/position to prevent duplicates
+    const term = isMT5 ? 'MT5' : 'MT4';
+    const srv = String(serverName || '').trim().toLowerCase();
+    const acc = String(account || '').trim();
+    return `${term}|${srv}|${acc}`;
   },
 
   // ✅ REMOVED: Unnecessary API health check
@@ -125,7 +144,7 @@ const TokenManager = {
       
       // Use very recent tokens without validation (< 1 hour)
       if (tokenAge < 3600000) {
-        console.log(`✅ Using fresh cached token for ${serverName}|${account} (age: ${Math.floor(tokenAge/60000)}min)`);
+        if (DEBUG_ENABLED) console.log(`✅ Token cache hit: ${serverName}|${account} (${Math.floor(tokenAge/60000)}min)`);
         return slot.token;
       }
       
@@ -136,10 +155,10 @@ const TokenManager = {
           try {
             const isValid = await this._validateToken(this._getClient(isMT5), slot.token);
             if (isValid) {
-              console.log(`✅ Validated cached token for ${serverName}|${account}`);
+              console.log(`✅ Token validated: ${serverName}|${account}`);
               return slot.token;
             } else {
-              console.log(`❌ Token validation failed for ${serverName}|${account}, will refresh`);
+              console.log(`🔄 Token refresh needed: ${serverName}|${account} (validation failed)`);
               this.cache.delete(key);
             }
           } catch (validationError) {
@@ -148,7 +167,7 @@ const TokenManager = {
             this.cache.delete(key);
           }
         } else {
-          console.log(`✅ Using cached token (skip validation) for ${serverName}|${account} (age: ${Math.floor(tokenAge/3600000)}h)`);
+          if (DEBUG_ENABLED) console.log(`✅ Token cache hit: ${serverName}|${account} (${Math.floor(tokenAge/3600000)}h)`);
           return slot.token;
         }
       } else {
@@ -158,24 +177,46 @@ const TokenManager = {
       }
     }
 
+    // ✅ FETCH LOCK: Check if another request is already fetching this token
+    if (this.inFlight.has(key)) {
+      console.log(`⏳ Token fetch already in progress for ${serverName}|${account}, waiting...`);
+      return await this.inFlight.get(key);
+    }
+
     // ✅ REMOVED: Unnecessary API health check before token fetch
     // Real API health is determined during actual token connection attempts
     const client = this._getClient(isMT5);
 
-    // Fetch new token under lock
-    const release = await this.lock.acquire(key);
-    try {
-      const result = await this._fetchTokenSimplified(client, serverName, account, password);
-      this.cache.set(key, {
-        token: result.token,
-        hostPort: result.hostPort,
-        lastFetch: Date.now()
-      });
-      console.log(`✅ New token cached for ${serverName}|${account}`);
-      return result.token;
-    } finally {
-      release();
-    }
+    // Create fetch promise and store in inFlight
+    const fetchPromise = (async () => {
+      const release = await this.lock.acquire(key);
+      try {
+        // Double-check cache after acquiring lock (may have been fetched by another request)
+        if (this.cache.has(key)) {
+          const slot = this.cache.get(key);
+          const tokenAge = Date.now() - slot.lastFetch;
+          if (tokenAge < this.tokenTTL) {
+            console.log(`✅ Token cached during wait for ${serverName}|${account}`);
+            return slot.token;
+          }
+        }
+        
+        const result = await this._fetchTokenSimplified(client, serverName, account, password);
+        this.cache.set(key, {
+          token: result.token,
+          hostPort: result.hostPort,
+          lastFetch: Date.now()
+        });
+        console.log(`✅ New token cached for ${serverName}|${account}`);
+        return result.token;
+      } finally {
+        release();
+        this.inFlight.delete(key); // Clear from inFlight when done
+      }
+    })();
+
+    this.inFlight.set(key, fetchPromise);
+    return await fetchPromise;
   },
 
   async getHostAndPort(isMT5, serverName, account, password, brokerId = null, position = 1) {
@@ -421,5 +462,6 @@ const TokenManager = {
   },
 };
 
+// ✅ SINGLETON: Initialize and export instance (not class) to ensure single token cache
 TokenManager.init();
 module.exports = { TokenManager, TokenError };

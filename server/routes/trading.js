@@ -36,25 +36,10 @@ const axiosMT5 = axios.create({
 const router = express.Router();
 router.use(auth);
 
+// ✅ SIMPLIFIED TOKEN MANAGEMENT: Only use TokenManager as single source of truth
 async function getValidToken(broker, isMT5) {
-  const now = Date.now();
-  
-  // Check database token first (with 5-minute buffer)
-  const tokenValid = broker.token && 
-                    broker.tokenExpiresAt && 
-                    new Date(broker.tokenExpiresAt).getTime() > (now + 300000);
-  
-  if (tokenValid) {
-    return broker.token;
-  }
-  
   try {
-    // Clear expired token
-    broker.token = null;
-    broker.tokenExpiresAt = null;
-    await broker.save();
-    
-    // Use simplified TokenManager
+    // REMOVED: All database token logic - TokenManager handles caching internally
     const token = await TokenManager.getToken(
       isMT5,
       broker.server,
@@ -63,14 +48,14 @@ async function getValidToken(broker, isMT5) {
       broker.id
     );
     
-    // Save to database
-    broker.token = token;
-    broker.tokenExpiresAt = new Date(Date.now() + 22 * 60 * 60 * 1000);
-    await broker.save();
-    
+    console.log(`✅ Token retrieved for ${broker.server}|${broker.accountNumber} via TokenManager`);
     return token;
     
   } catch (error) {
+    console.error(`❌ Token retrieval failed for ${broker.server}|${broker.accountNumber}:`, error.message);
+    
+    // Invalidate token cache on error
+    TokenManager.invalidateTokenByDetails(isMT5, broker.server, broker.accountNumber, 'api_error');
     throw error;
   }
 }
